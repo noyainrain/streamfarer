@@ -1,0 +1,16 @@
+[tool.mypy]
+files = "streamfarer"
+strict = true
+disallow_any_expr = true
+disallow_any_decorated = true
+disallow_any_explicit = true
+
+[tool.pylint.main]
+disable = [
+    # Good design is best figured out by humans yet
+    "design", "too-many-lines", "too-many-nested-blocks",
+    # Handled by mypy
+    "classes", "typecheck"
+]
+jobs = 0
+output-format = "colorized"
