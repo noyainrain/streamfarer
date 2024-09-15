@@ -10,6 +10,14 @@ The following software must be installed on your system:
 
 Streamfarer should work on any [POSIX](https://en.wikipedia.org/wiki/POSIX) system.
 
+## Installing Dependencies
+
+To install all dependencies, run:
+
+```sh
+make dependencies
+```
+
 ## Running Streamfarer
 
 To run Streamfarer, use:
