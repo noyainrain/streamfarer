@@ -1,24 +1,26 @@
-"""Command-Line interface.
-
-.. data:: VERSION
-
-   Current version.
-"""
+"""Command-Line interface."""
 
 from __future__ import annotations
 
+import argparse
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 import asyncio
+from asyncio import CancelledError, Event
 from collections.abc import Awaitable, Callable
+from configparser import ConfigParser, ParsingError
+from importlib import resources
+import logging
+from logging import getLogger
+import signal
+from signal import getsignal, SIGINT, SIGTERM
 from sqlite3 import OperationalError
 import sys
 from textwrap import dedent
 
 from . import context
-from .bot import Bot
+from .bot import Bot, VERSION
+from .server import serve
 from .services import AuthorizationError
-
-VERSION = '0.1.1'
 
 class _Arguments:
     command: Callable[[_Arguments], Awaitable[int]]
@@ -26,6 +28,25 @@ class _Arguments:
     client_id: str
     client_secret: str
     code: str
+    host: str
+    port: int
+
+async def _run(args: _Arguments) -> int:
+    logger = getLogger(__name__)
+
+    try:
+        server = serve(host=args.host, port=args.port)
+    except OSError as e:
+        print(f'⚠️ Failed to start the server ({e})', file=sys.stderr)
+        return 1
+    logger.info('Started the server at %s', server.url)
+
+    try:
+        await Event().wait()
+    finally:
+        server.close()
+        logger.info('Stopped the server')
+    return 0
 
 async def _service(args: _Arguments) -> int:
     # pylint: disable=unused-argument
@@ -38,19 +59,26 @@ async def _connect_twitch(args: _Arguments) -> int:
         await context.bot.get().twitch.connect(args.client_id, args.client_secret, args.code,
                                                'http://localhost:8080/', None)
     except AuthorizationError:
-        print('⚠️ Failed to get authorization with CLIENT_ID, CLIENT_SECRET and CODE')
+        print('⚠️ Failed to get authorization with CLIENT_ID, CLIENT_SECRET and CODE',
+              file=sys.stderr)
         return 1
-    print('✅ Connected Twitch')
+    print('✅ Connected Twitch', file=sys.stderr)
     return 0
 
 async def main(*args: str) -> int:
-    """Run the bot with command-line arguments *args* and return the exit status."""
+    """Execute a bot command with command-line arguments *args* and return the exit status."""
+    signal.signal(SIGTERM, getsignal(SIGINT))
+
     parser = ArgumentParser(
         prog='python3 -m streamfarer',
         description='Live stream traveling bot and tiny art experiment. ⛵',
-        epilog=f'Streamfarer {VERSION}')
-    parser.add_argument('--database-url', default='streamfarer.db', help='SQLite database URL')
+        epilog=f'Streamfarer {VERSION}', argument_default=argparse.SUPPRESS)
+    parser.add_argument('--database-url', help='SQLite database URL')
     subparsers = parser.add_subparsers(required=True)
+
+    run_help = 'Run the bot.'
+    run_parser = subparsers.add_parser('run', description=run_help, help=run_help)
+    run_parser.set_defaults(command=_run)
 
     service_help = 'Show connected livestreaming services.'
     service_parser = subparsers.add_parser('service', description=service_help, help=service_help)
@@ -92,14 +120,39 @@ Obtain CODE from the address bar.
         assert isinstance(e.code, int)
         return e.code
 
+    config = ConfigParser(strict=False, interpolation=None)
+    with (resources.files(f'{__package__}.res') / 'default.ini').open() as f:
+        config.read_file(f)
+    try:
+        config.read('streamfarer.ini')
+    except ParsingError as e:
+        print(f'⚠️ Failed to load the config file ({e})', file=sys.stderr)
+        return 1
+
+    options = config['streamfarer']
+    if not hasattr(parsed_args, 'database_url'):
+        parsed_args.database_url = options['database_url']
+    parsed_args.host = options['host']
+    try:
+        parsed_args.port = options.getint('port')
+    except ValueError:
+        print('⚠️ Failed to load the config file (Bad port type)', file=sys.stderr)
+        return 1
+
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s %(message)s', level=logging.INFO)
+    getLogger('asyncio').setLevel(logging.WARNING)
+
     Bot(database_url=parsed_args.database_url)
     try:
         return await parsed_args.command(parsed_args)
+    except CancelledError:
+        print('cancelled', file=sys.stderr)
+        return 2
     except OSError as e:
-        print(f'⚠️ Failed to communicate with the livestreaming service ({e})')
+        print(f'⚠️ Failed to communicate with the livestreaming service ({e})', file=sys.stderr)
         return 1
     except OperationalError as e:
-        print(f'⚠️ Failed to access the database ({e})')
+        print(f'⚠️ Failed to access the database ({e})', file=sys.stderr)
         return 1
 
 if __name__ == '__main__':

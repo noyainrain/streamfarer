@@ -26,6 +26,9 @@ To run Streamfarer, use:
 python3 -m streamfarer
 ```
 
+The config file `streamfarer.ini` is used, if present. See `streamfarer/res/default.ini` for
+documentation.
+
 ## Community
 
 Come join [#streamfarer⛵ on The Joy of Programming Discord server](https://discord.gg/pTn3TUUNVw)!

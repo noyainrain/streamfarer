@@ -1,4 +1,9 @@
-"""Bot logic."""
+"""Bot logic.
+
+.. data:: VERSION
+
+   Current version.
+"""
 
 import sqlite3
 from sqlite3 import Row
@@ -9,6 +14,8 @@ from pydantic import Field, TypeAdapter
 from . import context
 from .services import LocalService, LocalServiceAdapter, Service, Twitch, TwitchAdapter
 from .util import Connection
+
+VERSION = '0.1.2'
 
 class Bot:
     """Live stream traveling bot.
@@ -43,7 +50,7 @@ class Bot:
         """Get connected livestreaming services."""
         with self.transaction() as db:
             return [self._ServiceModel.validate_python(dict(row)) # type: ignore[misc]
-                    for row in db.execute('select * from services order by type')]
+                    for row in db.execute('SELECT * FROM services ORDER BY type')]
 
     def transaction(self) -> Connection[Row]:
         """Plumbing: Context manager to perform a transaction."""
