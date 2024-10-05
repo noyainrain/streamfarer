@@ -19,17 +19,22 @@ from textwrap import dedent
 
 from . import context
 from .bot import Bot, VERSION
+from .journey import OngoingJourneyError
 from .server import serve
 from .services import AuthorizationError
+from .util import text
 
 class _Arguments:
     command: Callable[[_Arguments], Awaitable[int]]
     database_url: str
+    host: str
+    port: int
+    channel_url: str
+    title: str
+    id: str
     client_id: str
     client_secret: str
     code: str
-    host: str
-    port: int
 
 async def _run(args: _Arguments) -> int:
     logger = getLogger(__name__)
@@ -48,8 +53,57 @@ async def _run(args: _Arguments) -> int:
         logger.info('Stopped the server')
     return 0
 
-async def _service(args: _Arguments) -> int:
-    # pylint: disable=unused-argument
+async def _journey(_: _Arguments) -> int:
+    for journey in context.bot.get().get_journeys():
+        print(journey)
+    return 0
+
+async def _start(args: _Arguments) -> int:
+    try:
+        await context.bot.get().start_journey(args.channel_url, args.title)
+    except LookupError:
+        print('⚠️ There is no channel at CHANNEL_URL or it is offline', file=sys.stderr)
+        return 1
+    except OngoingJourneyError:
+        print('⚠️ There already is an ongoing journey', file=sys.stderr)
+        return 1
+    except AuthorizationError:
+        print('⚠️ The livestreaming service has been disconnected', file=sys.stderr)
+        return 1
+    print('✅ Started a new journey', file=sys.stderr)
+    return 0
+
+async def _edit(args: _Arguments) -> int:
+    try:
+        context.bot.get().get_journey(args.id).edit(title=args.title)
+    except KeyError:
+        print('⚠️ There is no journey with ID', file=sys.stderr)
+        return 1
+    print('✅ Edited the journey', file=sys.stderr)
+    return 0
+
+async def _end(_: _Arguments) -> int:
+    try:
+        context.bot.get().get_journeys()[0].end()
+    except (IndexError, KeyError):
+        print('⚠️ There are no journeys', file=sys.stderr)
+        return 1
+    print('✅ Ended the ongoing journey', file=sys.stderr)
+    return 0
+
+async def _delete(args: _Arguments) -> int:
+    try:
+        context.bot.get().get_journey(args.id).delete()
+    except KeyError:
+        print('⚠️ There is no journey with ID', file=sys.stderr)
+        return 1
+    except OngoingJourneyError:
+        print('⚠️ The journey is still ongoing', file=sys.stderr)
+        return 1
+    print('✅ Deleted the journey', file=sys.stderr)
+    return 0
+
+async def _service(_: _Arguments) -> int:
     for service in context.bot.get().get_services():
         print(service)
     return 0
@@ -57,7 +111,7 @@ async def _service(args: _Arguments) -> int:
 async def _connect_twitch(args: _Arguments) -> int:
     try:
         await context.bot.get().twitch.connect(args.client_id, args.client_secret, args.code,
-                                               'http://localhost:8080/', None)
+                                               'http://localhost:8080/', None, None)
     except AuthorizationError:
         print('⚠️ Failed to get authorization with CLIENT_ID, CLIENT_SECRET and CODE',
               file=sys.stderr)
@@ -79,6 +133,32 @@ async def main(*args: str) -> int:
     run_help = 'Run the bot.'
     run_parser = subparsers.add_parser('run', description=run_help, help=run_help)
     run_parser.set_defaults(command=_run)
+
+    journey_help = 'Show all journeys.'
+    journey_parser = subparsers.add_parser('journey', description=journey_help, help=journey_help)
+    journey_parser.set_defaults(command=_journey)
+
+    start_help = 'Start a new journey.'
+    start_parser = subparsers.add_parser('start', description=start_help, help=start_help)
+    start_parser.add_argument('channel_url', help='URL of a live stream channel',
+                              metavar='CHANNEL_URL')
+    start_parser.add_argument('title', type=text, help='journey title', metavar='TITLE')
+    start_parser.set_defaults(command=_start)
+
+    edit_help = 'Edit a journey.'
+    edit_parser = subparsers.add_parser('edit', description=edit_help, help=edit_help)
+    edit_parser.add_argument('id', help='journey ID', metavar='ID')
+    edit_parser.add_argument('title', help='journey title', metavar='TITLE', type=text)
+    edit_parser.set_defaults(command=_edit)
+
+    end_help = 'End the ongoing journey.'
+    end_parser = subparsers.add_parser('end', description=end_help, help=end_help)
+    end_parser.set_defaults(command=_end)
+
+    delete_help = 'Delete a journey.'
+    delete_parser = subparsers.add_parser('delete', description=delete_help, help=delete_help)
+    delete_parser.add_argument('id', help='journey ID', metavar='ID')
+    delete_parser.set_defaults(command=_delete)
 
     service_help = 'Show connected livestreaming services.'
     service_parser = subparsers.add_parser('service', description=service_help, help=service_help)

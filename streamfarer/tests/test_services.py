@@ -1,20 +1,50 @@
 # pylint: disable=missing-docstring
 
-from typing import Generic, TypeVar
+from contextlib import AbstractContextManager
+from typing import Generic, Protocol, TypeVar
 
 from pydantic import BaseModel
 
-from streamfarer.services import AuthorizationError, Twitch
+from streamfarer.services import AuthorizationError, Channel, Service, Twitch
 from streamfarer.util import WebAPI
 
 from .test_bot import TestCase
 
 T = TypeVar('T')
 
+class ServiceTestProtocol(Protocol):
+    service: Service
+    channel: Channel
+    offline_channel: Channel
+
+    # pylint: disable=invalid-name
+    def assertEqual(self, first: object, second: object) -> None: ...
+    def assertRaises(self,
+                     expected_exception: type[BaseException]) -> AbstractContextManager[object]: ...
+
+class WithServiceTests:
+    async def test_stream(self: ServiceTestProtocol) -> None:
+        stream = await self.service.stream(self.channel.url)
+        self.assertEqual(stream.channel, self.channel)
+
+    async def test_stream_unknown_channel(self: ServiceTestProtocol) -> None:
+        with self.assertRaises(LookupError):
+            await self.service.stream('foo')
+
+    async def test_stream_offline_channel(self: ServiceTestProtocol) -> None:
+        with self.assertRaises(LookupError):
+            await self.service.stream(self.offline_channel.url)
+
 class ServiceAdapaterTest(TestCase):
     async def test_connect(self) -> None:
         service = await self.bot.local.connect()
         self.assertEqual(self.bot.get_services(), [service]) # type: ignore[misc]
+
+class LocalServiceTest(TestCase, WithServiceTests):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.service = self.local
+        self.offline_channel = await self.local.create_channel('Misha')
 
 class TwitchTestCase(TestCase):
     _API_PORT = 16160
@@ -28,6 +58,8 @@ class TwitchTestCase(TestCase):
 
     class _User(BaseModel): # type: ignore[misc]
         id: str
+        login: str
+        display_name: str
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
@@ -44,9 +76,14 @@ class TwitchTestCase(TestCase):
 
         users = TwitchTestCase._Page[TwitchTestCase._User].model_validate(
             await units.call('GET', 'users'))
-        self.code = users.data[0].id
+        user, offline_user = users.data[:2]
+        self.code = user.id
+        self.channel = Channel(url=f'https://www.twitch.tv/{user.login}', name=user.display_name)
+        self.offline_channel = Channel(url=f'https://www.twitch.tv/{offline_user.login}',
+                                       name=offline_user.display_name)
 
         self.redirect_uri = ''
+        self.api_url = f'http://localhost:{self._API_PORT}/mock/'
         self.oauth_url = f'http://localhost:{self._API_PORT}/auth/'
 
     async def asyncTearDown(self) -> None:
@@ -54,10 +91,17 @@ class TwitchTestCase(TestCase):
         await self._api_process.wait()
         await super().asyncTearDown()
 
+class TwitchTest(TwitchTestCase, WithServiceTests):
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.service = await self.bot.twitch.connect(
+            self.client_id, self.client_secret, self.code, self.redirect_uri, self.api_url,
+            self.oauth_url)
+
 class TwitchAdapterTest(TwitchTestCase):
     async def test_authorize(self) -> None:
         twitch = await self.bot.twitch.authorize(self.client_id, self.client_secret, self.code,
-                                                 self.redirect_uri, self.oauth_url)
+                                                 self.redirect_uri, self.api_url, self.oauth_url)
         self.assertEqual(twitch.oauth_url, self.oauth_url)
         self.assertEqual(twitch.client_id, self.client_id)
         self.assertEqual(twitch.client_secret, self.client_secret)
@@ -65,9 +109,11 @@ class TwitchAdapterTest(TwitchTestCase):
 
     async def test_authorize_invalid_code(self) -> None:
         with self.assertRaises(AuthorizationError):
-            await self.bot.twitch.authorize('foo', 'foo', 'foo', self.redirect_uri, self.oauth_url)
+            await self.bot.twitch.authorize('foo', 'foo', 'foo', self.redirect_uri, self.api_url,
+                                            self.oauth_url)
 
     async def test_authorize_communication_problem(self) -> None:
         with self.assertRaises(OSError):
-            await self.bot.twitch.authorize(self.client_id, self.client_secret, self.code,
-                                            self.redirect_uri, 'https://example.invalid/')
+            await self.bot.twitch.authorize(
+                self.client_id, self.client_secret, self.code, self.redirect_uri, self.api_url,
+                'https://example.invalid/')

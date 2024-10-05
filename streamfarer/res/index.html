@@ -10,7 +10,45 @@
     </head>
 
     <body>
-        <p>In all beginnings dwells a magic force ✨</p>
+        {% if journey %}
+            <h1>{{ journey.title }}</h1>
+            <p>
+                {% if journey.end_time %}
+                    Streamfarer was on a journey through Twitch for
+                    {{ format_duration(journey.duration) }}, from
+                    {{ format_datetime(journey.start_time) }} until
+                    {{ format_datetime(journey.end_time) }}.
+                {% else %}
+                    Streamfarer has been on a journey through Twitch for
+                    {{ format_duration(journey.duration) }} now, since
+                    {{ format_datetime(journey.start_time) }}.
+                {% end %}
+            </p>
+            <ul>
+                {% for stay in stays %}
+                    <li>
+                        <h2>
+                            <a href="{{ stay.channel.url }}" target="_blank">
+                                {{ stay.channel.name }}
+                            </a>
+                        </h2>
+                        <p>
+                            {% if stay.end_time %}
+                                From {{ format_datetime(stay.start_time) }} until
+                                {{ format_datetime(stay.end_time) }} for
+                                {{ format_duration(stay.duration) }}
+                            {% else %}
+                                Since {{ format_datetime(stay.start_time) }} for
+                                {{ format_duration(stay.duration) }}
+                            {% end %}
+                        </p>
+                    </li>
+                {% end %}
+            </ul>
+        {% else %}
+            <p>In all beginnings dwells a magic force ✨</p>
+        {% end %}
+
         <hr />
         <footer>
             <p>Streamfarer<p>

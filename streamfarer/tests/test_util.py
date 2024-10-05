@@ -2,11 +2,24 @@
 
 import json
 import logging
+from string import ascii_lowercase
+from unittest import TestCase
 
 from tornado.testing import AsyncHTTPTestCase, gen_test
 from tornado.web import Application, RequestHandler
 
-from streamfarer.util import WebAPI
+from streamfarer.util import WebAPI, nested, randstr
+
+class RandstrTest(TestCase):
+    def test(self) -> None:
+        text = randstr()
+        self.assertEqual(len(text), 16)
+        self.assertLessEqual(set(text), set(ascii_lowercase))
+
+class NestedTest(TestCase):
+    def test(self) -> None:
+        data = nested({'id': 'a', 'cat_name': 'Frank', 'cat_age': 7}, 'cat')
+        self.assertEqual(data, {'id': 'a', 'cat': {'name': 'Frank', 'age': 7}}) # type: ignore[misc]
 
 class Echo(RequestHandler):
     def get(self, status: str | None) -> None:

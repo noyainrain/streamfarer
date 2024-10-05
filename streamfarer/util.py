@@ -1,9 +1,12 @@
 """Various utilities."""
 
+from argparse import ArgumentTypeError
 from collections.abc import Callable, Mapping
 import errno
 import json
 from json import JSONDecodeError
+import random
+from string import ascii_lowercase
 import sqlite3
 from typing import Generic, Protocol, TypeVar
 from urllib.parse import urlencode, urljoin, urlsplit
@@ -18,6 +21,41 @@ class SupportsLenAndGetItem(Protocol):
     # pylint: disable=missing-class-docstring
     def __len__(self) -> int: ...
     def __getitem__(self, key: int) -> object: ...
+
+def randstr(length: int = 16, *, characters: str = ascii_lowercase) -> str:
+    """Generate a random string with the given *length*.
+
+    The result is comprised of the given set of *characters*.
+    """
+    # To be suitable for IDs, the default length l is chosen such that
+    # 1 - exp(-n * (n - 1) / (2 * c ** l)) <= p, where the probability of collision p = 1‰, the
+    # presumed number of entities n = 1000000 and the size of the character set c = 26. (see
+    # https://en.wikipedia.org/wiki/Birthday_problem)
+    return ''.join(random.choice(characters) for _ in range(length))
+
+def nested(mapping: Mapping[str, object], name: str, *, separator: str = '_') -> dict[str, object]:
+    """Return a dictionary with prefixed keys from a *mapping* merged into a nested dictionary.
+
+    The relevant prefix is a *name* along with a *separator*. The nested dictionary has the given
+    *name* and unprefixed items.
+    """
+    sub: dict[str, object] = {}
+    result: dict[str, object] = {name: sub}
+    prefix = f'{name}{separator}'
+    for key, value in mapping.items():
+        sub_key = key.removeprefix(prefix)
+        if sub_key != key:
+            sub[sub_key] = value
+        else:
+            result[key] = value
+    return result
+
+def text(arg: str) -> str:
+    """Convert a command-line argument *arg* to a text with visible characters."""
+    arg = arg.strip()
+    if not arg:
+        raise ArgumentTypeError()
+    return arg
 
 class WebAPI:
     """Simple JSON REST API client.

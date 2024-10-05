@@ -9,12 +9,21 @@ from pathlib import Path
 from tornado.httpserver import HTTPServer
 from tornado.web import Application, RequestHandler
 
+from . import context
 from .bot import VERSION
+from .core import format_datetime, format_duration
 
 class _Index(RequestHandler):
     def get(self) -> None:
         # pylint: disable=missing-function-docstring
-        self.render('index.html', version=VERSION)
+        try:
+            journey = context.bot.get().get_journeys()[0]
+            stays = journey.get_stays()
+        except IndexError:
+            journey = None
+            stays = None
+        self.render('index.html', journey=journey, stays=stays, version=VERSION,
+                    format_datetime=format_datetime, format_duration=format_duration)
 
 def _log(handler: RequestHandler) -> None:
     request = handler.request

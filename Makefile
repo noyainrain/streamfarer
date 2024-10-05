@@ -1,11 +1,12 @@
 PYTHON=python3
+PYTHONFLAGS=-W error
 PIP=pip3
 PIPFLAGS=--upgrade
 PYLINTFLAGS=
 
 .PHONY: test
 test:
-	$(PYTHON) -m unittest
+	$(PYTHON) $(PYTHONFLAGS) -m unittest
 
 .PHONY: type
 type:
