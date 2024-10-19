@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 import asyncio
-from asyncio import CancelledError, Event
+from asyncio import CancelledError
 from collections.abc import Awaitable, Callable
 from configparser import ConfigParser, ParsingError
 from importlib import resources
@@ -47,7 +47,7 @@ async def _run(args: _Arguments) -> int:
     logger.info('Started the server at %s', server.url)
 
     try:
-        await Event().wait()
+        await context.bot.get().run()
     finally:
         server.close()
         logger.info('Stopped the server')
@@ -111,7 +111,7 @@ async def _service(_: _Arguments) -> int:
 async def _connect_twitch(args: _Arguments) -> int:
     try:
         await context.bot.get().twitch.connect(args.client_id, args.client_secret, args.code,
-                                               'http://localhost:8080/', None, None)
+                                               'http://localhost:8080/', None, None, None, None)
     except AuthorizationError:
         print('⚠️ Failed to get authorization with CLIENT_ID, CLIENT_SECRET and CODE',
               file=sys.stderr)

@@ -8,7 +8,7 @@
 from datetime import datetime, timedelta
 from typing import Annotated
 
-from pydantic import StringConstraints
+from pydantic import BaseModel, StringConstraints
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
@@ -21,3 +21,13 @@ def format_duration(duration: timedelta) -> str:
     hours, duration = divmod(duration, timedelta(hours=1))
     minutes = duration // timedelta(minutes=1)
     return ' '.join(filter(None, (f'{hours} h' if hours else None, f'{minutes} min')))
+
+class Event(BaseModel): # type: ignore[misc]
+    """Bot event.
+
+    .. attribute:: type
+
+       Event type.
+    """
+
+    type: str

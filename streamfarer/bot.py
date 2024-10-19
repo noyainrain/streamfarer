@@ -5,22 +5,26 @@
    Current version.
 """
 
-from collections.abc import Callable
+import asyncio
+from asyncio import Queue, sleep
+from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime
 from functools import partial
+from logging import getLogger
 import sqlite3
-from sqlite3 import IntegrityError, OperationalError, Row
+from sqlite3 import IntegrityError, Row
 from typing import Annotated
 
 from pydantic import Field, TypeAdapter, validate_call
 
 from . import context
-from .core import Text
-from .journey import Journey, OngoingJourneyError
-from .services import LocalService, LocalServiceAdapter, Service, Stream, Twitch, TwitchAdapter
-from .util import Connection, randstr
+from .core import Event, Text
+from .journey import Journey, OngoingJourneyError, Stay
+from .services import (AuthorizationError, LocalService, LocalServiceAdapter, Service, Stream,
+                       Twitch, TwitchAdapter)
+from .util import Connection, add_column, randstr
 
-VERSION = '0.1.3'
+VERSION = '0.1.4'
 
 class Bot:
     """Live stream traveling bot.
@@ -52,10 +56,79 @@ class Bot:
         self.database_url = database_url
         self.now = now
         self._db: Connection[Row] | None = None
+        self._event_queues: set[Queue[Event]] = set()
 
         if context.bot.get(None):
             raise RuntimeError('Duplicate bot in task')
         context.bot.set(self)
+
+    def events(self) -> AsyncGenerator[Event]:
+        """Stream of bot events."""
+        queue: Queue[Event] = Queue()
+        self._event_queues.add(queue)
+        async def generator() -> AsyncGenerator[Event]:
+            try:
+                while True:
+                    yield await queue.get()
+            finally:
+                self._event_queues.remove(queue)
+        return generator()
+
+    def dispatch_event(self, event: Event) -> None:
+        """Plumbing: Dispatch an *event*."""
+        for queue in self._event_queues:
+            queue.put_nowait(event)
+
+    async def _stay(self, stay: Stay) -> None:
+        logger = getLogger(__name__)
+        logger.info('Started staying at %s', stay.channel.url)
+        try:
+            while True:
+                try:
+                    try:
+                        stream = await self.stream(stay.channel.url)
+                    except LookupError:
+                        break
+                    async with stream:
+                        await anext(stream, None)
+                        break
+                except AuthorizationError:
+                    logger.error('Failed to get authorization from the livestreaming service')
+                    await asyncio.Event().wait()
+                except OSError as e:
+                    logger.warning('Failed to communicate with the livestreaming service (%s)', e)
+                    await sleep(1)
+        finally:
+            logger.info('Stopped staying at %s', stay.channel.url)
+
+    async def _travel(self, journey: Journey) -> None:
+        logger = getLogger(__name__)
+        logger.info('Started traveling on %s', journey.title)
+        try:
+            try:
+                stay = journey.get_stays()[0]
+            except IndexError:
+                return
+            await self._stay(stay)
+            try:
+                journey.end()
+                logger.info('Ended the journey %s', journey.title)
+            except KeyError:
+                pass
+        finally:
+            logger.info('Stopped traveling on %s', journey.title)
+
+    async def run(self) -> None:
+        """Run the bot."""
+        logger = getLogger(__name__)
+        logger.info('Started the bot')
+        try:
+            journey = next(iter(self.get_journeys()), None)
+            if journey and not journey.end_time:
+                await self._travel(journey)
+            await asyncio.Event().wait()
+        finally:
+            logger.info('Stopped the bot')
 
     def get_journeys(self) -> list[Journey]:
         """Get all journeys, latest first.
@@ -109,7 +182,7 @@ class Bot:
                 (randstr(), journey.id, stream.channel.url, stream.channel.name, start_time, None))
             return journey
 
-    def get_services(self) -> list[Service]:
+    def get_services(self) -> list[Service[Stream]]:
         """Get connected livestreaming services."""
         with self.transaction() as db:
             return [self._ServiceModel.validate_python(dict(row)) # type: ignore[misc]
@@ -169,19 +242,36 @@ class Bot:
                 """)
             db.execute(
                 """
-                CREATE TABLE IF NOT EXISTS services
-                (type PRIMARY KEY, api_url, oauth_url, client_id, client_secret, token)
+                CREATE TABLE IF NOT EXISTS services (
+                    type PRIMARY KEY,
+                    api_url,
+                    oauth_url,
+                    eventsub_url,
+                    websocket_url,
+                    client_id,
+                    client_secret,
+                    token
+                )
                 """)
 
             # Update Twitch.api_url
-            try:
-                db.execute('ALTER TABLE services ADD api_url')
-            except OperationalError as e:
-                if 'api_url' not in str(e):
-                    raise
-            else:
-                db.execute(
-                    """
-                    UPDATE services SET api_url = 'https://api.twitch.tv/helix/'
-                    WHERE type = 'twitch'
-                    """)
+            add_column(db, 'services', 'api_url')
+            db.execute(
+                "UPDATE services SET api_url = ? WHERE type = 'twitch' AND api_url IS NULL",
+                (TwitchAdapter.PRODUCTION_API_URL, ))
+
+            # Update Twitch.eventsub_url
+            add_column(db, 'services', 'eventsub_url')
+            db.execute(
+                """
+                UPDATE services SET eventsub_url = 'https://api.twitch.tv/helix/eventsub/'
+                WHERE type = 'twitch' AND eventsub_url IS NULL
+                """)
+
+            # Update Twitch.websocket_url
+            add_column(db, 'services', 'websocket_url')
+            db.execute(
+                """
+                UPDATE services SET websocket_url = 'wss://eventsub.wss.twitch.tv/ws'
+                WHERE type = 'twitch' AND websocket_url IS NULL
+                """)

@@ -1,20 +1,28 @@
 # pylint: disable=missing-docstring
 
+from asyncio import create_task, sleep
 import json
 import logging
+import sqlite3
 from string import ascii_lowercase
-from unittest import TestCase
+from unittest import IsolatedAsyncioTestCase, TestCase
 
 from tornado.testing import AsyncHTTPTestCase, gen_test
 from tornado.web import Application, RequestHandler
 
-from streamfarer.util import WebAPI, nested, randstr
+from streamfarer.util import WebAPI, add_column, cancel, nested, randstr
 
 class RandstrTest(TestCase):
     def test(self) -> None:
         text = randstr()
         self.assertEqual(len(text), 16)
         self.assertLessEqual(set(text), set(ascii_lowercase))
+
+class CancelTest(IsolatedAsyncioTestCase):
+    async def test(self) -> None:
+        task = create_task(sleep(1))
+        await cancel(task)
+        self.assertTrue(task.cancelled())
 
 class NestedTest(TestCase):
     def test(self) -> None:
@@ -38,6 +46,16 @@ class Echo(RequestHandler):
             self.set_status(int(status))
         self.write({'data': data, 'query': query, 'headers': headers}) # type: ignore[misc]
 
+class AddColumnTest(TestCase):
+    def test(self) -> None:
+        db = sqlite3.connect(':memory:')
+        with db:
+            db.execute('CREATE TABLE cats (name)')
+            add_column(db, 'cats', '"age"')
+            rows = db.execute('SELECT * FROM cats')
+            columns: tuple[tuple[str, None, None, None, None, None, None], ...] = rows.description
+        self.assertEqual([column[0] for column in columns], ['name', '"age"']) # type: ignore[misc]
+
 class WebAPITest(AsyncHTTPTestCase):
     def setUp(self) -> None:
         super().setUp()
@@ -56,6 +74,7 @@ class WebAPITest(AsyncHTTPTestCase):
                          {'token': 'secret', 'name': 'Frank'}) # type: ignore[misc]
         headers = echo.get('headers')
         assert isinstance(headers, dict)
+        self.assertEqual(headers.get('Content-Type'), 'application/json')
         self.assertEqual(headers.get('Authorization'), 'Bearer: secret')
 
     @gen_test # type: ignore[misc]

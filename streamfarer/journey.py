@@ -9,7 +9,7 @@ from typing import Self
 from pydantic import BaseModel, validate_call
 
 from . import context
-from .core import Text, format_datetime
+from .core import Event, Text, format_datetime
 from .services import Channel
 from .util import nested
 
@@ -123,9 +123,11 @@ class Journey(BaseModel): # type: ignore[misc]
             db.execute('UPDATE stays SET end_time = ? WHERE journey_id = ? AND end_time IS NULL',
                        (end_time, self.id))
             try:
-                return self.model_validate(dict(next(rows)))
+                journey = self.model_validate(dict(next(rows)))
             except StopIteration:
                 raise KeyError(self.id) from None
+        bot.dispatch_event(Event(type='journey-end'))
+        return journey
 
     def delete(self) -> None:
         """Delete the ended journey."""

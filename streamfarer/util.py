@@ -1,5 +1,6 @@
 """Various utilities."""
 
+from asyncio import CancelledError, Task
 from argparse import ArgumentTypeError
 from collections.abc import Callable, Mapping
 import errno
@@ -8,6 +9,7 @@ from json import JSONDecodeError
 import random
 from string import ascii_lowercase
 import sqlite3
+from sqlite3 import OperationalError
 from typing import Generic, Protocol, TypeVar
 from urllib.parse import urlencode, urljoin, urlsplit
 
@@ -33,6 +35,14 @@ def randstr(length: int = 16, *, characters: str = ascii_lowercase) -> str:
     # https://en.wikipedia.org/wiki/Birthday_problem)
     return ''.join(random.choice(characters) for _ in range(length))
 
+async def cancel(task: Task[object]) -> None:
+    """Cancel a *task*."""
+    task.cancel()
+    try:
+        await task
+    except CancelledError:
+        pass
+
 def nested(mapping: Mapping[str, object], name: str, *, separator: str = '_') -> dict[str, object]:
     """Return a dictionary with prefixed keys from a *mapping* merged into a nested dictionary.
 
@@ -56,6 +66,16 @@ def text(arg: str) -> str:
     if not arg:
         raise ArgumentTypeError()
     return arg
+
+def add_column(db: sqlite3.Connection, table: str, column: str) -> None:
+    """Add a *column* to a *table* in a database *db* if it does not exist yet."""
+    table = table.replace('"', '""')
+    column = column.replace('"', '""')
+    try:
+        db.execute(f'ALTER TABLE "{table}" ADD "{column}"')
+    except OperationalError as e:
+        if column not in str(e):
+            raise
 
 class WebAPI:
     """Simple JSON REST API client.
@@ -124,12 +144,16 @@ class WebAPI:
             raise ValueError(f'Bad endpoint {endpoint}')
 
         query = {**self.query, **query}
+        headers = dict(self.headers)
         url = urljoin(self.url, f'{endpoint}?{urlencode(query)}')
-        body = None if data is None else json.dumps(data)
+        body = None
+        if data is not None:
+            body = json.dumps(data)
+            headers['Content-Type'] = 'application/json'
 
         try:
             response = await AsyncHTTPClient().fetch(
-                HTTPRequest(url, method=method, headers=self.headers, body=body,
+                HTTPRequest(url, method=method, headers=headers, body=body,
                             allow_nonstandard_methods=True))
         except HTTPClientError as e:
             if e.code >= 500:

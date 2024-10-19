@@ -1,5 +1,6 @@
 # pylint: disable=missing-docstring
 
+from asyncio import create_task
 from datetime import datetime, timezone
 import logging
 from tempfile import NamedTemporaryFile
@@ -7,6 +8,7 @@ from unittest import IsolatedAsyncioTestCase
 
 from streamfarer.bot import Bot
 from streamfarer.journey import OngoingJourneyError
+from streamfarer.util import cancel
 
 class TestCase(IsolatedAsyncioTestCase):
     @classmethod
@@ -17,20 +19,32 @@ class TestCase(IsolatedAsyncioTestCase):
         # pylint: disable=consider-using-with
         self._f = NamedTemporaryFile()
         self.bot = Bot(database_url=self._f.name, now=self.now)
+        self.events = self.bot.events()
 
         self.local = await self.bot.local.connect()
         for channel in await self.local.get_channels():
             await self.local.delete_channel(channel.url)
         self.channel = await self.local.create_channel('Frank')
-        await self.local.play(self.channel.url)
+        self.stream = await self.local.play(self.channel.url)
 
     async def asyncTearDown(self) -> None:
+        await self.events.aclose() # type: ignore[misc]
         self._f.close()
 
     def now(self) -> datetime:
         return datetime(2024, 9, 13, tzinfo=timezone.utc)
 
 class BotTestCase(TestCase):
+    async def test_run(self) -> None:
+        await self.bot.start_journey(self.channel.url, 'Roaming')
+        task = create_task(self.bot.run())
+        try:
+            await self.stream.stop()
+            event = await anext(self.events) # type: ignore[misc]
+            self.assertEqual(event.type, 'journey-end')
+        finally:
+            await cancel(task)
+
     async def test_start_journey(self) -> None:
         journey = await self.bot.start_journey(self.channel.url, 'Roaming')
 
