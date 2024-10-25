@@ -83,6 +83,9 @@ class TwitchTestCase(TestCase):
         login: str
         display_name: str
 
+    class _Stream(BaseModel): # type: ignore[misc]
+        user_id: str
+
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
 
@@ -101,7 +104,11 @@ class TwitchTestCase(TestCase):
 
         users = TwitchTestCase._Page[TwitchTestCase._User].model_validate(
             await units.call('GET', 'users'))
-        user, offline_user = users.data[:2]
+        streams = TwitchTestCase._Page[TwitchTestCase._Stream].model_validate(
+            await units.call('GET', 'streams'))
+        online_user_ids = {stream.user_id for stream in streams.data}
+        user = next(user for user in users.data if user.id in online_user_ids)
+        offline_user = next(user for user in users.data if user.id not in online_user_ids)
         self.code = user.id
         self.channel = Channel(url=f'https://www.twitch.tv/{user.login}', name=user.display_name)
         self.offline_channel = Channel(url=f'https://www.twitch.tv/{offline_user.login}',
