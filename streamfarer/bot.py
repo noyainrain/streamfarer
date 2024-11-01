@@ -20,11 +20,11 @@ from pydantic import Field, TypeAdapter, validate_call
 from . import context
 from .core import Event, Text
 from .journey import Journey, OngoingJourneyError, Stay
-from .services import (AuthorizationError, LocalService, LocalServiceAdapter, Service, Stream,
+from .services import (AuthenticationError, LocalService, LocalServiceAdapter, Service, Stream,
                        Twitch, TwitchAdapter)
 from .util import Connection, add_column, randstr
 
-VERSION = '0.1.4'
+VERSION = '0.1.5'
 
 class Bot:
     """Live stream traveling bot.
@@ -92,8 +92,8 @@ class Bot:
                     async with stream:
                         await anext(stream, None)
                         break
-                except AuthorizationError:
-                    logger.error('Failed to get authorization from the livestreaming service')
+                except AuthenticationError:
+                    logger.error('Failed to authenticate with the livestreaming service')
                     await asyncio.Event().wait()
                 except OSError as e:
                     logger.warning('Failed to communicate with the livestreaming service (%s)', e)
@@ -250,7 +250,8 @@ class Bot:
                     websocket_url,
                     client_id,
                     client_secret,
-                    token
+                    token,
+                    refresh_token
                 )
                 """)
 
@@ -274,4 +275,12 @@ class Bot:
                 """
                 UPDATE services SET websocket_url = 'wss://eventsub.wss.twitch.tv/ws'
                 WHERE type = 'twitch' AND websocket_url IS NULL
+                """)
+
+            # Update Twitch.refresh_token
+            add_column(db, 'services', 'refresh_token')
+            db.execute(
+                """
+                UPDATE services SET refresh_token = ''
+                WHERE type = 'twitch' AND refresh_token IS NULL
                 """)

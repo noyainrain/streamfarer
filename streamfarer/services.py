@@ -9,6 +9,7 @@ from contextlib import AbstractAsyncContextManager
 import errno
 from functools import partial
 from http import HTTPStatus
+from logging import getLogger
 from types import TracebackType
 from typing import Annotated, ClassVar, Generic, Literal, ParamSpec, Self, TypeVar
 from urllib.parse import quote
@@ -25,6 +26,9 @@ S = TypeVar('S', bound='Service[Stream]')
 L_co = TypeVar('L_co', bound='Stream', covariant=True)
 
 _T = TypeVar('_T')
+
+class AuthenticationError(Exception):
+    """Raised when authentication with a livestreaming service fails."""
 
 class AuthorizationError(Exception):
     """Raised when getting authorization from a livestreaming service fails."""
@@ -47,7 +51,7 @@ class Channel(BaseModel): # type: ignore[misc]
 class Stream(AbstractAsyncContextManager['Stream']):
     """Live stream.
 
-    Any operation may raise an :exc:`AuthorizationError` if getting authorization fails or an
+    Any operation may raise an :exc:`AuthenticationError` if authentication fails or an
     :exc:`OSError` if there is a problem communicating with the livestreaming service.
 
     .. attribute:: channel
@@ -95,7 +99,7 @@ class Stream(AbstractAsyncContextManager['Stream']):
 class Service(BaseModel, Generic[L_co]): # type: ignore[misc]
     """Connected livestreaming service.
 
-    Any operation may raise an :exc:`AuthorizationError` if getting authorization fails or an
+    Any operation may raise an :exc:`AuthenticationError` if authentication fails or an
     :exc:`OSError` if there is a problem communicating with the service.
 
     .. attribute:: type
@@ -106,7 +110,40 @@ class Service(BaseModel, Generic[L_co]): # type: ignore[misc]
     type: str
 
     async def stream(self, channel_url: str) -> L_co:
+        """Open the live stream at the given *channel_url*.
+
+        If required, the service is automatically reconnected.
+        """
+        service = self
+        while True:
+            try:
+                return await service.open_stream(channel_url)
+            except AuthenticationError as e:
+                try:
+                    service = await self.reconnect()
+                    getLogger(__name__).info('Reconnected the livestreaming service')
+                except AuthorizationError:
+                    raise e from None
+
+    async def open_stream(self, channel_url: str) -> L_co:
         """Open the live stream at the given *channel_url*."""
+        raise NotImplementedError()
+
+    async def reconnect(self) -> Self:
+        """Reconnect the expired service.
+
+        If getting authorization fails, an :exc:`AuthorizationError` is raised. If there is a
+        problem communicating with the service, an :exc:`OSError` is raised.
+        """
+        service = await self.reauthorize()
+        with context.bot.get().transaction() as db:
+            data: dict[str, object] = service.model_dump()
+            columns = ', '.join(f'{name} = ?' for name in data)
+            db.execute(f'UPDATE services SET {columns} WHERE type = ?', (*data.values(), self.type))
+        return service
+
+    async def reauthorize(self) -> Self:
+        """Refresh authorization and construct the service."""
         raise NotImplementedError()
 
     async def get_channels(self) -> list[Channel]:
@@ -197,7 +234,7 @@ class LocalService(Service[LocalStream]): # type: ignore[misc]
 
     type: Literal['local']
 
-    async def stream(self, channel_url: str) -> LocalStream:
+    async def open_stream(self, channel_url: str) -> LocalStream:
         return self._streams[channel_url]
 
     async def get_channels(self) -> list[Channel]:
@@ -233,6 +270,10 @@ class LocalServiceAdapter(ServiceAdapter[[], LocalService]):
 
     async def authorize(self) -> LocalService:
         return LocalService(type='local')
+
+class _TwitchToken(BaseModel): # type: ignore[misc]
+    access_token: str
+    refresh_token: str
 
 class _TwitchMessage(BaseModel): # type: ignore[misc]
     class _Metadata(BaseModel): # type: ignore[misc]
@@ -280,6 +321,23 @@ _AnyTwitchMessage = Annotated[
     Discriminator(_twitch_message_type)
 ]
 _AnyTwitchMessageModel: TypeAdapter[_AnyTwitchMessage] = TypeAdapter(_AnyTwitchMessage)
+
+async def _post_twitch_token(oauth: WebAPI, endpoint: str, *, client_id: str, client_secret: str,
+                             grant_type: str, **args: str) -> _TwitchToken:
+    try:
+        return _TwitchToken.model_validate(
+            await oauth.call(
+                'POST', endpoint,
+                query={
+                    'client_id': client_id,
+                    'client_secret': client_secret,
+                    'grant_type': grant_type,
+                    **args
+                }))
+    except WebAPI.Error as e:
+        if e.status == HTTPStatus.BAD_REQUEST:
+            raise AuthorizationError(f'Failed authorization for {client_id}') from e
+        raise
 
 async def _read_twitch_message(websocket: WebSocketClientConnection, *,
                                keepalive: float = 0) -> _TwitchMessage:
@@ -339,6 +397,10 @@ class TwitchStream(Stream):
 class Twitch(Service[TwitchStream]): # type: ignore[misc]
     """Twitch connection."""
 
+    # Work around Pylint missing docstrings from a generic parent (see
+    # https://github.com/pylint-dev/pylint/issues/9766)
+    # pylint: disable=missing-function-docstring
+
     type: Literal['twitch']
     """Web API URL."""
     api_url: str
@@ -354,6 +416,8 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
     client_secret: str
     """Access token."""
     token: str
+    """Refresh token."""
+    refresh_token: str
 
     class _Page(BaseModel, Generic[_T]): # type: ignore[misc]
         data: list[_T]
@@ -389,8 +453,7 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
         if process.returncode != 0:
             raise OSError(errno.EINVAL, 'Error {process.returncode}')
 
-    async def stream(self, channel_url: str) -> TwitchStream:
-        """..."""
+    async def open_stream(self, channel_url: str) -> TwitchStream:
         login = channel_url.removeprefix('https://www.twitch.tv/')
         if login == channel_url:
             raise LookupError(channel_url)
@@ -433,7 +496,7 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
                 raise
         except WebAPI.Error as e:
             if e.status == HTTPStatus.UNAUTHORIZED:
-                raise AuthorizationError(f'Failed authorization of {self.client_id}') from e
+                raise AuthenticationError(f'Failed authentication of {self.client_id}') from e
             raise
 
     def _subscription(self, subscription_type: str, condition: dict[str, str],
@@ -444,6 +507,17 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
             'condition': condition,
             'transport': {'method': 'websocket', 'session_id': session_id}
         }
+
+    async def reauthorize(self) -> Self:
+        token = await _post_twitch_token(
+            WebAPI(self.oauth_url), 'token', client_id=self.client_id,
+            client_secret=self.client_secret, grant_type='refresh_token',
+            refresh_token=self.refresh_token)
+        return self.copy(
+            update={ # type: ignore[misc]
+                'token': token.access_token,
+                'refresh_token': token.refresh_token
+            })
 
     def __str__(self) -> str:
         return f'📺 Twitch via application {self.client_id}'
@@ -465,33 +539,23 @@ class TwitchAdapter(
 
     _PRODUCTION_OAUTH_URL = 'https://id.twitch.tv/oauth2/'
 
-    class _Token(BaseModel): # type: ignore[misc]
-        access_token: str
-
     async def authorize(
         self, client_id: str, client_secret: str, code: str, redirect_uri: str, api_url: str | None,
         oauth_url: str | None, eventsub_url: str | None, websocket_url: str | None
     ) -> Twitch:
         oauth = WebAPI(oauth_url or self._PRODUCTION_OAUTH_URL)
         if oauth.url == self._PRODUCTION_OAUTH_URL:
-            endpoint = 'token'
-            query = {'grant_type': 'authorization_code', 'code': code, 'redirect_uri': redirect_uri}
+            token = await _post_twitch_token(
+                oauth, 'token', client_id=client_id, client_secret=client_secret,
+                grant_type='authorization_code', code=code, redirect_uri=redirect_uri)
         else:
-            endpoint = 'authorize'
-            query={'grant_type': 'user_token', 'user_id': code}
-
-        try:
-            token = TwitchAdapter._Token.model_validate(
-                await oauth.call(
-                    'POST', endpoint,
-                    query={**query, 'client_id': client_id, 'client_secret': client_secret}))
-        except WebAPI.Error as e:
-            if e.status == HTTPStatus.BAD_REQUEST:
-                raise AuthorizationError(f'Failed authorization of {client_id}') from e
-            raise
+            token = await _post_twitch_token(
+                oauth, 'authorize', client_id=client_id, client_secret=client_secret,
+                grant_type='user_token', user_id=code)
 
         return Twitch(
             type='twitch', api_url=api_url or self.PRODUCTION_API_URL, oauth_url=oauth.url,
             eventsub_url=eventsub_url or 'https://api.twitch.tv/helix/eventsub/',
             websocket_url=websocket_url or 'wss://eventsub.wss.twitch.tv/ws',
-            client_id=client_id, client_secret=client_secret, token=token.access_token)
+            client_id=client_id, client_secret=client_secret, token=token.access_token,
+            refresh_token=token.refresh_token)

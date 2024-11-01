@@ -21,7 +21,7 @@ from . import context
 from .bot import Bot, VERSION
 from .journey import OngoingJourneyError
 from .server import serve
-from .services import AuthorizationError
+from .services import AuthenticationError, AuthorizationError
 from .util import text
 
 class _Arguments:
@@ -67,7 +67,7 @@ async def _start(args: _Arguments) -> int:
     except OngoingJourneyError:
         print('⚠️ There already is an ongoing journey', file=sys.stderr)
         return 1
-    except AuthorizationError:
+    except AuthenticationError:
         print('⚠️ The livestreaming service has been disconnected', file=sys.stderr)
         return 1
     print('✅ Started a new journey', file=sys.stderr)
