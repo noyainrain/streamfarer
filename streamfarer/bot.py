@@ -7,24 +7,27 @@
 
 import asyncio
 from asyncio import Queue, sleep
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
 from functools import partial
 from logging import getLogger
 import sqlite3
 from sqlite3 import IntegrityError, Row
-from typing import Annotated
+from typing import Annotated, ParamSpec, TypeVar
 
 from pydantic import Field, TypeAdapter, validate_call
 
 from . import context
 from .core import Event, Text
-from .journey import Journey, OngoingJourneyError, Stay
+from .journey import EndedJourneyError, Journey, OngoingJourneyError, Stay
 from .services import (AuthenticationError, LocalService, LocalServiceAdapter, Service, Stream,
                        Twitch, TwitchAdapter)
 from .util import Connection, add_column, randstr
 
-VERSION = '0.1.5'
+VERSION = '0.1.6'
+
+_P = ParamSpec('_P')
+_R_co = TypeVar('_R_co', covariant=True)
 
 class Bot:
     """Live stream traveling bot.
@@ -48,6 +51,23 @@ class Bot:
 
     _AnyService = Annotated[Twitch | LocalService, Field(discriminator='type')]
     _ServiceModel: TypeAdapter[_AnyService] = TypeAdapter(_AnyService)
+
+    @staticmethod
+    def _retrying(
+        func: Callable[_P, Awaitable[_R_co]]
+    ) -> Callable[_P, Coroutine[None, None, _R_co]]:
+        async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R_co:
+            logger = getLogger(__name__)
+            while True:
+                try:
+                    return await func(*args, **kwargs)
+                except AuthenticationError:
+                    logger.error('Failed to authenticate with the livestreaming service')
+                    await asyncio.Event().wait()
+                except OSError as e:
+                    logger.warning('Failed to communicate with the livestreaming service (%s)', e)
+                    await sleep(1)
+        return wrapper
 
     def __init__(self, *, database_url: str = 'streamfarer.db',
                  now: Callable[[], datetime] = partial(datetime.now, UTC)) -> None:
@@ -79,25 +99,50 @@ class Bot:
         for queue in self._event_queues:
             queue.put_nowait(event)
 
-    async def _stay(self, stay: Stay) -> None:
+    @_retrying
+    async def _travel_on(self, journey: Journey, channel_url: str) -> Stay:
+        stay = await journey.travel_on(channel_url)
+        getLogger(__name__).info('Traveled on to %s', stay.channel.url)
+        return stay
+
+    @_retrying
+    async def _do_stay(self, stay: Stay) -> Stay | None:
+        logger = getLogger(__name__)
+        journey = stay.get_journey()
+
+        try:
+            stream = await self.stream(stay.channel.url)
+        except LookupError:
+            logger.info('Channel at %s is offline', stay.channel.url)
+        else:
+            async with stream:
+                async for event in stream:
+                    assert isinstance(event, Stream.RaidEvent)
+                    logger.info('Stream at %s raided %s', stay.channel.url, event.target_url)
+                    try:
+                        return await self._travel_on(journey, event.target_url)
+                    except LookupError:
+                        logger.info('Channel at %s is offline', event.target_url)
+                        break
+                    except EndedJourneyError:
+                        logger.info('Journey “%s” ended', journey.title)
+                        return None
+                else:
+                    logger.info('Stream at %s stopped', stay.channel.url)
+
+        try:
+            journey.end()
+        except KeyError:
+            # Deleted journeys have ended
+            pass
+        logger.info('Ended the journey %s', journey.title)
+        return None
+
+    async def _stay(self, stay: Stay) -> Stay | None:
         logger = getLogger(__name__)
         logger.info('Started staying at %s', stay.channel.url)
         try:
-            while True:
-                try:
-                    try:
-                        stream = await self.stream(stay.channel.url)
-                    except LookupError:
-                        break
-                    async with stream:
-                        await anext(stream, None)
-                        break
-                except AuthenticationError:
-                    logger.error('Failed to authenticate with the livestreaming service')
-                    await asyncio.Event().wait()
-                except OSError as e:
-                    logger.warning('Failed to communicate with the livestreaming service (%s)', e)
-                    await sleep(1)
+            return await self._do_stay(stay)
         finally:
             logger.info('Stopped staying at %s', stay.channel.url)
 
@@ -105,16 +150,9 @@ class Bot:
         logger = getLogger(__name__)
         logger.info('Started traveling on %s', journey.title)
         try:
-            try:
-                stay = journey.get_stays()[0]
-            except IndexError:
-                return
-            await self._stay(stay)
-            try:
-                journey.end()
-                logger.info('Ended the journey %s', journey.title)
-            except KeyError:
-                pass
+            stay: Stay | None = journey.get_stays()[0]
+            while stay:
+                stay = await self._stay(stay)
         finally:
             logger.info('Stopped traveling on %s', journey.title)
 
@@ -154,8 +192,8 @@ class Bot:
 
         *title* is the journey title.
 
-        If getting authorization from the livestreaming service fails, an :exc:`AuthorizationError`
-        is raised. If there is a problem communicating with the livestreaming service, an
+        If authentication with the livestreaming service fails, an :exc:`AuthenticationError` is
+        raised. If there is a problem communicating with the livestreaming service, an
         :exc:`OSError` is raised.
         """
         stream = await self.stream(channel_url)

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from asyncio import Queue, create_subprocess_exec, timeout
+from asyncio import Queue, create_subprocess_exec, gather, timeout
 from asyncio.subprocess import Process, DEVNULL, PIPE
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 import errno
 from functools import partial
@@ -12,7 +12,7 @@ from http import HTTPStatus
 from logging import getLogger
 from types import TracebackType
 from typing import Annotated, ClassVar, Generic, Literal, ParamSpec, Self, TypeVar
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 from pydantic import BaseModel, Discriminator, Tag, TypeAdapter, ValidationError, validate_call
 from tornado.websocket import WebSocketClientConnection, websocket_connect
@@ -69,6 +69,16 @@ class Stream(AbstractAsyncContextManager['Stream']):
     class Event(BaseModel): # type: ignore[misc]
         """Live stream event."""
 
+    class RaidEvent(Event): # type: ignore[misc]
+        """Dispatched when the stream raids another.
+
+        .. attribute:: target_url
+
+           URL of the target channel.
+        """
+
+        target_url: str
+
     def __init__(self, channel: Channel, service: Service[Stream]) -> None:
         self.channel = channel
         self.service = service
@@ -88,6 +98,13 @@ class Stream(AbstractAsyncContextManager['Stream']):
         traceback: TracebackType | None
     ) -> None:
         await self.aclose()
+
+    async def raid(self, target_url: str) -> None:
+        """Raid the stream at the given *target_url*.
+
+        If the stream does not support the utility, a :exc:`RuntimeError` is raised.
+        """
+        raise RuntimeError('Unsupported operation')
 
     async def stop(self) -> None:
         """Stop the stream broadcast.
@@ -148,6 +165,13 @@ class Service(BaseModel, Generic[L_co]): # type: ignore[misc]
 
     async def get_channels(self) -> list[Channel]:
         """Get all live stream channels.
+
+        If the service does not support the utility, a :exc:`RuntimeError` is raised.
+        """
+        raise RuntimeError('Unsupported operation')
+
+    async def get_channel(self, channel_url: str) -> Channel:
+        """Get the live stream channel at the given *channel_url*.
 
         If the service does not support the utility, a :exc:`RuntimeError` is raised.
         """
@@ -218,6 +242,10 @@ class LocalStream(Stream):
     async def aclose(self) -> None:
         self._events.put_nowait(ConnectionResetError(errno.ECONNRESET, 'Closed stream'))
 
+    async def raid(self, target_url: str) -> None:
+        channel = await self.service.get_channel(target_url)
+        await self._events.put(Stream.RaidEvent(target_url=channel.url))
+
     async def stop(self) -> None:
         self._events.put_nowait(StopAsyncIteration())
         self._delete()
@@ -240,6 +268,9 @@ class LocalService(Service[LocalStream]): # type: ignore[misc]
     async def get_channels(self) -> list[Channel]:
         return list(self._channels.values())
 
+    async def get_channel(self, channel_url: str) -> Channel:
+        return self._channels[channel_url]
+
     @validate_call # type: ignore[misc]
     async def create_channel(self, name: Text) -> Channel:
         channel = Channel(url=f'streamfarer:{quote(name)}', name=name)
@@ -254,7 +285,8 @@ class LocalService(Service[LocalStream]): # type: ignore[misc]
         self._channels.pop(channel_url, None)
 
     async def play(self, channel_url: str) -> LocalStream:
-        stream = LocalStream(channel=self._channels[channel_url], service=self,
+        channel = await self.get_channel(channel_url)
+        stream = LocalStream(channel=channel, service=self,
                              _delete=partial(self._delete_stream, channel_url))
         self._streams[channel_url] = stream
         return stream
@@ -291,10 +323,25 @@ class _TwitchSessionPayload(BaseModel): # type: ignore[misc]
 class _TwitchNotificationPayload(BaseModel): # type: ignore[misc]
     pass
 
+class _TwitchChannelRaidPayload(_TwitchNotificationPayload): # type: ignore[misc]
+    class _Event(BaseModel): # type: ignore[misc]
+        to_broadcaster_user_login: str
+
+    event: _Event
+
 class _TwitchStreamOfflinePayload(_TwitchNotificationPayload): # type: ignore[misc]
     pass
 
-_AnyTwitchNotificationPayload = _TwitchStreamOfflinePayload
+def _twitch_subscription_type(data: dict[str, object]) -> str:
+    subscription = data.get('subscription')
+    subscription_type = subscription.get('type') if isinstance(subscription, dict) else None
+    return subscription_type if isinstance(subscription_type, str) else ''
+
+_AnyTwitchNotificationPayload = Annotated[
+    Annotated[_TwitchChannelRaidPayload, Tag('channel.raid')] |
+    Annotated[_TwitchStreamOfflinePayload, Tag('stream.offline')],
+    Discriminator(_twitch_subscription_type)
+]
 
 class _TwitchWelcomeMessage(_TwitchMessage): # type: ignore[misc]
     payload: _TwitchSessionPayload
@@ -371,6 +418,10 @@ class TwitchStream(Stream):
             match message:
                 case _TwitchNotificationMessage():
                     match message.payload:
+                        case _TwitchChannelRaidPayload():
+                            return Stream.RaidEvent(
+                                target_url=urljoin(Twitch.CHANNEL_BASE_URL,
+                                                   message.payload.event.to_broadcaster_user_login))
                         case _TwitchStreamOfflinePayload():
                             self._eof = True
                             await self.aclose()
@@ -388,6 +439,13 @@ class TwitchStream(Stream):
     async def aclose(self) -> None:
         self._websocket.close()
 
+    async def raid(self, target_url: str) -> None:
+        if self.service.api_url == TwitchAdapter.PRODUCTION_API_URL:
+            raise RuntimeError('Unsupported operation')
+        user = await self.service._get_user(target_url)
+        await Twitch.cli('event', 'trigger', '--transport=websocket',
+                         f'--from-user={self._channel_id}', f'--to-user={user.id}', 'raid')
+
     async def stop(self) -> None:
         if self.service.api_url == TwitchAdapter.PRODUCTION_API_URL:
             raise RuntimeError('Unsupported operation')
@@ -395,7 +453,12 @@ class TwitchStream(Stream):
                          f'--to-user={self._channel_id}', 'streamdown')
 
 class Twitch(Service[TwitchStream]): # type: ignore[misc]
-    """Twitch connection."""
+    """Twitch connection.
+
+    .. attribute:: CHANNEL_BASE_URL
+
+       Channel base URL.
+    """
 
     # Work around Pylint missing docstrings from a generic parent (see
     # https://github.com/pylint-dev/pylint/issues/9766)
@@ -418,6 +481,8 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
     token: str
     """Refresh token."""
     refresh_token: str
+
+    CHANNEL_BASE_URL: ClassVar[str] = 'https://www.twitch.tv/'
 
     class _Page(BaseModel, Generic[_T]): # type: ignore[misc]
         data: list[_T]
@@ -451,52 +516,47 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
         process = await Twitch.start_cli(*args)
         await process.communicate()
         if process.returncode != 0:
-            raise OSError(errno.EINVAL, 'Error {process.returncode}')
+            raise OSError(errno.EINVAL, f'Error {process.returncode}')
 
     async def open_stream(self, channel_url: str) -> TwitchStream:
-        login = channel_url.removeprefix('https://www.twitch.tv/')
-        if login == channel_url:
-            raise LookupError(channel_url)
-        api = WebAPI(self.api_url,
-                     headers={'Authorization': f'Bearer {self.token}', 'Client-Id': self.client_id})
-        eventsub = WebAPI(self.eventsub_url, headers=api.headers)
-
+        user = await self._get_user(channel_url)
+        websocket = await websocket_connect(self.websocket_url)
         try:
-            users = Twitch._Page[Twitch._User].model_validate(
-                await api.call("GET", "users", query={'login': login}))
+            message = await _read_twitch_message(websocket)
+            if not isinstance(message, _TwitchWelcomeMessage):
+                raise OSError(errno.EPROTO,
+                              f"Unexpected message type {message.metadata.message_type}")
+
+            eventsub = WebAPI(
+                self.eventsub_url,
+                headers={'Authorization': f'Bearer {self.token}', 'Client-Id': self.client_id})
+            subscriptions = [
+                self._subscription('channel.raid', {'from_broadcaster_user_id': user.id},
+                                   message.payload.session.id),
+                self._subscription('stream.offline', {'broadcaster_user_id': user.id},
+                                   message.payload.session.id)
+            ]
             try:
-                user = users.data[0]
-            except IndexError:
-                raise LookupError(channel_url) from None
-
-            websocket = await websocket_connect(self.websocket_url)
-            try:
-                message = await _read_twitch_message(websocket)
-                if not isinstance(message, _TwitchWelcomeMessage):
-                    raise OSError(errno.EPROTO,
-                                  f"Unexpected message type {message.metadata.message_type}")
-
-                await eventsub.call(
-                    'POST', 'subscriptions',
-                    data=self._subscription('stream.offline', {'broadcaster_user_id': user.id},
-                                            message.payload.session.id))
-
-                streams = Twitch._Page[object].model_validate(
-                    await api.call('GET', 'streams', query={'user_id': user.id}))
-                if not streams.data:
-                    raise LookupError(channel_url)
-
-                return TwitchStream(
-                    channel=Channel(url=channel_url, name=user.display_name), service=self,
-                    _websocket=websocket,
-                    _keepalive=message.payload.session.keepalive_timeout_seconds,
-                    _channel_id=user.id)
-            except:
-                websocket.close()
+                await gather(
+                    *(eventsub.call('POST', 'subscriptions', data=subscription)
+                      for subscription in subscriptions))
+            except WebAPI.Error as e:
+                if e.status == HTTPStatus.UNAUTHORIZED:
+                    raise AuthenticationError(f'Failed authentication of {self.client_id}') from e
                 raise
-        except WebAPI.Error as e:
-            if e.status == HTTPStatus.UNAUTHORIZED:
-                raise AuthenticationError(f'Failed authentication of {self.client_id}') from e
+
+            streams = Twitch._Page[object].model_validate(
+                await self._call('GET', 'streams', query={'user_id': user.id}))
+            if not streams.data:
+                raise LookupError(channel_url)
+
+            return TwitchStream(
+                channel=Channel(url=channel_url, name=user.display_name), service=self,
+                _websocket=websocket,
+                _keepalive=message.payload.session.keepalive_timeout_seconds,
+                _channel_id=user.id)
+        except:
+            websocket.close()
             raise
 
     def _subscription(self, subscription_type: str, condition: dict[str, str],
@@ -518,6 +578,29 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
                 'token': token.access_token,
                 'refresh_token': token.refresh_token
             })
+
+    async def _call(self, method: str, endpoint: str, *, data: Mapping[str, object] | None = None,
+                    query: Mapping[str, str] = {}) -> dict[str, object]:
+        # pylint: disable=dangerous-default-value
+        api = WebAPI(self.api_url,
+                     headers={'Authorization': f'Bearer {self.token}', 'Client-Id': self.client_id})
+        try:
+            return await api.call(method, endpoint, data=data, query=query)
+        except WebAPI.Error as e:
+            if e.status == HTTPStatus.UNAUTHORIZED:
+                raise AuthenticationError(f'Failed authentication of {self.client_id}') from e
+            raise
+
+    async def _get_user(self, channel_url: str) -> Twitch._User:
+        login = channel_url.removeprefix(self.CHANNEL_BASE_URL)
+        if login == channel_url:
+            raise LookupError(channel_url)
+        users = Twitch._Page[Twitch._User].model_validate(
+            await self._call("GET", "users", query={'login': login}))
+        try:
+            return users.data[0]
+        except IndexError:
+            raise LookupError(channel_url) from None
 
     def __str__(self) -> str:
         return f'📺 Twitch via application {self.client_id}'

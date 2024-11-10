@@ -1,7 +1,7 @@
 # pylint: disable=missing-docstring
 
 from asyncio import create_task
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 import logging
 from tempfile import NamedTemporaryFile
 from unittest import IsolatedAsyncioTestCase
@@ -20,6 +20,7 @@ class TestCase(IsolatedAsyncioTestCase):
         self._f = NamedTemporaryFile()
         self.bot = Bot(database_url=self._f.name, now=self.now)
         self.events = self.bot.events()
+        self._now = datetime(2024, 9, 13, tzinfo=UTC)
 
         self.local = await self.bot.local.connect()
         for channel in await self.local.get_channels():
@@ -32,15 +33,25 @@ class TestCase(IsolatedAsyncioTestCase):
         self._f.close()
 
     def now(self) -> datetime:
-        return datetime(2024, 9, 13, tzinfo=timezone.utc)
+        return self._now
+
+    def tick(self) -> datetime:
+        self._now += timedelta(minutes=1)
+        return self._now
 
 class BotTestCase(TestCase):
     async def test_run(self) -> None:
+        next_channel = await self.local.create_channel('Misha')
+        next_stream = await self.local.play(next_channel.url)
         await self.bot.start_journey(self.channel.url, 'Roaming')
+
         task = create_task(self.bot.run())
         try:
-            await self.stream.stop()
+            await self.stream.raid(next_channel.url)
             event = await anext(self.events) # type: ignore[misc]
+            self.assertEqual(event.type, 'journey-travel-on')
+            await next_stream.stop()
+            event = await anext(self.events)
             self.assertEqual(event.type, 'journey-end')
         finally:
             await cancel(task)

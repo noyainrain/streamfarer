@@ -30,6 +30,15 @@ class WithStreamTests:
             with self.assertRaises(StopAsyncIteration):
                 await anext(stream)
 
+    async def test_anext_on_raid(self: ServiceTestProtocol) -> None:
+        stream = await self.service.stream(self.channel.url)
+        async with stream:
+            await stream.raid(self.offline_channel.url)
+            event = await anext(stream)
+            assert isinstance(event, Stream.RaidEvent)
+            # Skip checking target_url because the Twitch mock server raids the fake channel
+            # testBroadcaster
+
     async def test_anext_closed_stream(self: ServiceTestProtocol) -> None:
         stream = await self.service.stream(self.channel.url)
         await stream.aclose()

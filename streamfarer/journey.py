@@ -11,10 +11,13 @@ from pydantic import BaseModel, validate_call
 from . import context
 from .core import Event, Text, format_datetime
 from .services import Channel
-from .util import nested
+from .util import nested, randstr
 
 class OngoingJourneyError(Exception):
     """Raised when an action cannot be performed due to an ongoing journey."""
+
+class EndedJourneyError(Exception):
+    """Raised when an action cannot be performed because the journey has ended."""
 
 class Stay(BaseModel): # type: ignore[misc]
     """Stay at a live stream on a journey.
@@ -138,6 +141,34 @@ class Journey(BaseModel): # type: ignore[misc]
                 if 'deleted_end_time_check' in str(e):
                     raise OngoingJourneyError(f'Ongoing journey {self.id}') from None
                 raise
+
+    async def travel_on(self, channel_url: str) -> Stay:
+        """End the current stay and travel on to the given *channel_url*.
+
+        If authentication with the livestreaming service fails, an :exc:`AuthenticationError` is
+        raised. If there is a problem communicating with the livestreaming service, an
+        :exc:`OSError` is raised.
+        """
+        bot = context.bot.get()
+        stream = await bot.stream(channel_url)
+
+        with bot.transaction() as db:
+            now = bot.now().isoformat()
+            # Simplify the query by handling deleted as ended journeys
+            rows = db.execute(
+                'UPDATE stays SET end_time = ? WHERE journey_id = ? AND end_time IS NULL',
+                (now, self.id))
+            if not rows.rowcount:
+                raise EndedJourneyError(f'Ended journey {self.id}')
+            rows = db.execute(
+                """
+                INSERT INTO stays(id, journey_id, channel_url, channel_name, start_time, end_time)
+                VALUES (?, ?, ?, ?, ?, ?) RETURNING *
+                """,
+                (randstr(), self.id, stream.channel.url, stream.channel.name, now, None))
+            stay = Stay.model_validate(nested(dict(next(rows)), 'channel'))
+        bot.dispatch_event(Event(type='journey-travel-on'))
+        return stay
 
     def __str__(self) -> str:
         period = (
