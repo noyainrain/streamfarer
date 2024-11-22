@@ -1,7 +1,7 @@
 # pylint: disable=missing-docstring
 
 from streamfarer.core import Event
-from streamfarer.journey import EndedJourneyError, OngoingJourneyError
+from streamfarer.journey import EndedJourneyError, OngoingJourneyError, PastJourneyError
 
 from .test_bot import TestCase
 
@@ -25,15 +25,38 @@ class JourneyTest(TestCase):
         self.assertEqual(journey.end_time, self.now())
         event = await anext(self.events) # type: ignore[misc]
         self.assertEqual(event, Event(type='journey-end'))
-        stays = journey.get_stays()
-        self.assertTrue(stays)
-        self.assertEqual(stays[0].end_time, self.now())
+        self.assertEqual(journey.get_latest_stay().end_time, self.now())
 
     def test_end_deleted_journey(self) -> None:
         self.journey.end()
         self.journey.delete()
         with self.assertRaises(KeyError):
             self.journey.end()
+
+    async def test_resume(self) -> None:
+        self.journey.end()
+        await anext(self.events) # type: ignore[misc]
+
+        journey = await self.journey.resume()
+        self.assertIsNone(journey.end_time)
+        self.assertEqual(await anext(self.events), # type: ignore[misc]
+                         Event(type='journey-resume'))
+        self.assertIsNone(journey.get_latest_stay().end_time)
+
+    async def test_resume_past_journey(self) -> None:
+        self.journey.end()
+        self.tick()
+        journey = await self.bot.start_journey(self.channel.url, 'Roaming')
+        journey.end()
+
+        with self.assertRaises(PastJourneyError):
+            await self.journey.resume()
+
+    async def test_resume_deleted_journey(self) -> None:
+        self.journey.end()
+        self.journey.delete()
+        with self.assertRaises(KeyError):
+            await self.journey.resume()
 
     def test_delete(self) -> None:
         self.journey.end()

@@ -19,6 +19,9 @@ class OngoingJourneyError(Exception):
 class EndedJourneyError(Exception):
     """Raised when an action cannot be performed because the journey has ended."""
 
+class PastJourneyError(Exception):
+    """Raised when an action cannot be performed because the journey is not the latest one."""
+
 class Stay(BaseModel): # type: ignore[misc]
     """Stay at a live stream on a journey.
 
@@ -100,6 +103,14 @@ class Journey(BaseModel): # type: ignore[misc]
                               (self.id, ))
             return [Stay.model_validate(nested(dict(row), 'channel')) for row in rows]
 
+    def get_latest_stay(self) -> Stay:
+        """Get the latest stay on the journey."""
+        with context.bot.get().transaction() as db:
+            rows = db.execute(
+                'SELECT * FROM stays WHERE journey_id = ? ORDER BY start_time DESC LIMIT 1',
+                (self.id, ))
+            return Stay.model_validate(nested(dict(next(rows)), 'channel'))
+
     @validate_call # type: ignore[misc]
     def edit(self, title: Text) -> Self:
         """Edit the journey *title*."""
@@ -130,6 +141,45 @@ class Journey(BaseModel): # type: ignore[misc]
             except StopIteration:
                 raise KeyError(self.id) from None
         bot.dispatch_event(Event(type='journey-end'))
+        return journey
+
+    async def resume(self) -> Journey:
+        """Resume the ended journey.
+
+        If authentication with the livestreaming service fails, an :exc:`AuthenticationError` is
+        raised. If there is a problem communicating with the livestreaming service, an
+        :exc:`OSError` is raised.
+        """
+        bot = context.bot.get()
+        await bot.stream(self.get_latest_stay().channel.url)
+
+        with bot.transaction() as db:
+            try:
+                rows = db.execute(
+                    """
+                    UPDATE journeys SET end_time = NULL WHERE id = ? AND deleted = 0
+                    RETURNING
+                        *,
+                        (SELECT id = ? FROM journeys ORDER BY start_time DESC LIMIT 1) AS latest
+                    """,
+                    (self.id, self.id))
+                row = dict(next(rows))
+                if not row['latest']:
+                    raise PastJourneyError(f'Past journey {self.id}')
+                journey = Journey.model_validate(row)
+            except IntegrityError as e:
+                if 'journeys_end_time_index' in str(e):
+                    raise PastJourneyError(f'Past journey {self.id}') from None
+                raise
+            except StopIteration:
+                raise KeyError(self.id) from None
+            db.execute(
+                """
+                UPDATE stays SET end_time = NULL WHERE journey_id = ? ORDER BY start_time DESC
+                LIMIT 1
+                """,
+                (self.id, ))
+        bot.dispatch_event(Event(type='journey-resume'))
         return journey
 
     def delete(self) -> None:

@@ -19,7 +19,7 @@ from textwrap import dedent
 
 from . import context
 from .bot import Bot, VERSION
-from .journey import OngoingJourneyError
+from .journey import OngoingJourneyError, PastJourneyError
 from .server import serve
 from .services import AuthenticationError, AuthorizationError
 from .util import text
@@ -67,9 +67,6 @@ async def _start(args: _Arguments) -> int:
     except OngoingJourneyError:
         print('⚠️ There already is an ongoing journey', file=sys.stderr)
         return 1
-    except AuthenticationError:
-        print('⚠️ The livestreaming service has been disconnected', file=sys.stderr)
-        return 1
     print('✅ Started a new journey', file=sys.stderr)
     return 0
 
@@ -89,6 +86,21 @@ async def _end(_: _Arguments) -> int:
         print('⚠️ There are no journeys', file=sys.stderr)
         return 1
     print('✅ Ended the ongoing journey', file=sys.stderr)
+    return 0
+
+async def _resume(_: _Arguments) -> int:
+    try:
+        await context.bot.get().get_journeys()[0].resume()
+    except IndexError:
+        print('⚠️ There are no journeys', file=sys.stderr)
+        return 1
+    except (PastJourneyError, KeyError):
+        print('⚠️ The latest journey has been deleted', file=sys.stderr)
+        return 1
+    except LookupError:
+        print('⚠️ The current channel is offline or has been deleted', file=sys.stderr)
+        return 1
+    print('✅ Resumed the latest journey', file=sys.stderr)
     return 0
 
 async def _delete(args: _Arguments) -> int:
@@ -154,6 +166,10 @@ async def main(*args: str) -> int:
     end_help = 'End the ongoing journey.'
     end_parser = subparsers.add_parser('end', description=end_help, help=end_help)
     end_parser.set_defaults(command=_end)
+
+    resume_help = 'Resume the latest journey.'
+    resume_parser = subparsers.add_parser('resume', description=resume_help, help=resume_help)
+    resume_parser.set_defaults(command=_resume)
 
     delete_help = 'Delete a journey.'
     delete_parser = subparsers.add_parser('delete', description=delete_help, help=delete_help)
@@ -228,6 +244,9 @@ Obtain CODE from the address bar.
     except CancelledError:
         print('cancelled', file=sys.stderr)
         return 2
+    except AuthenticationError:
+        print('⚠️ The livestreaming service has been disconnected', file=sys.stderr)
+        return 1
     except OSError as e:
         print(f'⚠️ Failed to communicate with the livestreaming service ({e})', file=sys.stderr)
         return 1
