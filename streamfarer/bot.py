@@ -8,7 +8,7 @@
 import asyncio
 from asyncio import Queue, sleep
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from logging import getLogger
 import sqlite3
@@ -19,12 +19,12 @@ from pydantic import Field, TypeAdapter, validate_call
 
 from . import context
 from .core import Event, Text
-from .journey import EndedJourneyError, Journey, OngoingJourneyError, Stay
+from .journey import EndedJourneyError, Journey, OngoingJourneyError, PastJourneyError, Stay
 from .services import (AuthenticationError, LocalService, LocalServiceAdapter, Service, Stream,
-                       Twitch, TwitchAdapter)
+                       StreamTimeoutError, Twitch, TwitchAdapter)
 from .util import Connection, add_column, randstr
 
-VERSION = '0.1.7'
+VERSION = '0.1.8'
 
 _P = ParamSpec('_P')
 _R_co = TypeVar('_R_co', covariant=True)
@@ -48,6 +48,8 @@ class Bot:
 
        Function that returns the current UTC date and time.
     """
+
+    _JOURNEY_END_GRACE_PERIOD = timedelta(minutes=5)
 
     _AnyService = Annotated[Twitch | LocalService, Field(discriminator='type')]
     _ServiceModel: TypeAdapter[_AnyService] = TypeAdapter(_AnyService)
@@ -106,37 +108,57 @@ class Bot:
         return stay
 
     @_retrying
+    async def _resume(self, journey: Journey) -> Journey:
+        assert journey.end_time
+        timeout = (journey.end_time + self._JOURNEY_END_GRACE_PERIOD - self.now()).total_seconds()
+        return await journey.resume(timeout=timeout)
+
+    @_retrying
     async def _do_stay(self, stay: Stay) -> Stay | None:
         logger = getLogger(__name__)
         journey = stay.get_journey()
 
-        try:
-            stream = await self.stream(stay.channel.url)
-        except LookupError:
-            logger.info('Channel at %s is offline', stay.channel.url)
-        else:
-            async with stream:
-                async for event in stream:
-                    assert isinstance(event, Stream.RaidEvent)
-                    logger.info('Stream at %s raided %s', stay.channel.url, event.target_url)
-                    try:
-                        return await self._travel_on(journey, event.target_url)
-                    except LookupError:
-                        logger.info('Channel at %s is offline', event.target_url)
-                        break
-                    except EndedJourneyError:
-                        logger.info('Journey “%s” ended', journey.title)
-                        return None
+        while True:
+            try:
+                try:
+                    stream = await self.stream(stay.channel.url)
+                except LookupError:
+                    logger.info('Channel at %s is offline', stay.channel.url)
                 else:
-                    logger.info('Stream at %s stopped', stay.channel.url)
+                    async with stream:
+                        async for event in stream:
+                            assert isinstance(event, Stream.RaidEvent)
+                            logger.info('Stream at %s raided %s', stay.channel.url,
+                                        event.target_url)
+                            try:
+                                return await self._travel_on(journey, event.target_url)
+                            except LookupError:
+                                logger.info('Channel at %s is offline', event.target_url)
+                        else:
+                            logger.info('Stream at %s stopped', stay.channel.url)
 
-        try:
-            journey.end()
-        except KeyError:
-            # Deleted journeys have ended
-            pass
-        logger.info('Ended the journey %s', journey.title)
-        return None
+                try:
+                    journey = journey.end()
+                    logger.info('Ended the journey %s', journey.title)
+                except KeyError:
+                    raise EndedJourneyError() from None
+            except EndedJourneyError:
+                logger.info('Journey “%s” ended', journey.title)
+                return None
+
+            try:
+                journey = await self._resume(journey)
+                logger.info('Stream at %s restarted', stay.channel.url)
+                logger.info('Resumed the journey %s', journey.title)
+            except StreamTimeoutError:
+                logger.info('Stream at %s did not restart', stay.channel.url)
+                return None
+            except KeyError:
+                logger.info('Journey “%s” has been deleted', journey.title)
+                return None
+            except PastJourneyError:
+                logger.info('New journey started')
+                return None
 
     async def _stay(self, stay: Stay) -> Stay | None:
         logger = getLogger(__name__)
@@ -226,16 +248,18 @@ class Bot:
             return [self._ServiceModel.validate_python(dict(row)) # type: ignore[misc]
                     for row in db.execute('SELECT * FROM services ORDER BY type')]
 
-    async def stream(self, channel_url: str) -> Stream:
+    async def stream(self, channel_url: str, *, timeout: float | None = None) -> Stream:
         """Open the live stream at the given *channel_url*.
 
-        If getting authorization from the livestreaming service fails, an :exc:`AuthorizationError`
-        is raised. If there is a problem communicating with the livestreaming service, an
+        Optionally, the channel is awaited to come online with a *timeout* in seconds.
+
+        If authentication with the livestreaming service fails, an :exc:`AuthenticationError` is
+        raised. If there is a problem communicating with the livestreaming service, an
         :exc:`OSError` is raised.
         """
         for service in self.get_services():
             try:
-                return await service.stream(channel_url)
+                return await service.stream(channel_url, timeout=timeout)
             except LookupError:
                 pass
         raise LookupError(channel_url)

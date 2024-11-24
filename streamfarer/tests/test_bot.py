@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile
 from unittest import IsolatedAsyncioTestCase
 
 from streamfarer.bot import Bot
+from streamfarer.core import Event
 from streamfarer.journey import OngoingJourneyError
 from streamfarer.util import cancel
 
@@ -47,12 +48,18 @@ class BotTestCase(TestCase):
 
         task = create_task(self.bot.run())
         try:
+            self.tick()
             await self.stream.raid(next_channel.url)
-            event = await anext(self.events) # type: ignore[misc]
+            event: Event = await anext(self.events)
             self.assertEqual(event.type, 'journey-travel-on')
+
             await next_stream.stop()
             event = await anext(self.events)
             self.assertEqual(event.type, 'journey-end')
+
+            await self.local.play(next_channel.url)
+            event = await anext(self.events)
+            self.assertEqual(event.type, 'journey-resume')
         finally:
             await cancel(task)
 

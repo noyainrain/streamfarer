@@ -143,15 +143,17 @@ class Journey(BaseModel): # type: ignore[misc]
         bot.dispatch_event(Event(type='journey-end'))
         return journey
 
-    async def resume(self) -> Journey:
+    async def resume(self, *, timeout: float | None = None) -> Journey:
         """Resume the ended journey.
+
+        Optionally, the current channel is awaited to come online with a *timeout* in seconds.
 
         If authentication with the livestreaming service fails, an :exc:`AuthenticationError` is
         raised. If there is a problem communicating with the livestreaming service, an
         :exc:`OSError` is raised.
         """
         bot = context.bot.get()
-        await bot.stream(self.get_latest_stay().channel.url)
+        await bot.stream(self.get_latest_stay().channel.url, timeout=timeout)
 
         with bot.transaction() as db:
             try:

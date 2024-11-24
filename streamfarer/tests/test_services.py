@@ -5,7 +5,8 @@ from typing import Generic, Protocol, TypeVar
 
 from pydantic import BaseModel
 
-from streamfarer.services import AuthorizationError, Channel, Service, Stream, Twitch
+from streamfarer.services import (AuthorizationError, Channel, Service, Stream, StreamTimeoutError,
+                                  Twitch)
 from streamfarer.util import WebAPI
 
 from .test_bot import TestCase
@@ -58,6 +59,10 @@ class WithServiceTests:
     async def test_stream_offline_channel(self: ServiceTestProtocol) -> None:
         with self.assertRaises(LookupError):
             await self.service.stream(self.offline_channel.url)
+
+    async def test_stream_timeout(self: ServiceTestProtocol) -> None:
+        with self.assertRaises(StreamTimeoutError):
+            await self.service.stream(self.offline_channel.url, timeout=0)
 
 class ServiceAdapaterTest(TestCase):
     async def test_connect(self) -> None:

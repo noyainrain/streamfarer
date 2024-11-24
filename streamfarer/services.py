@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from asyncio import Queue, create_subprocess_exec, gather, timeout
+import asyncio
+from asyncio import (Future, InvalidStateError, Queue, create_subprocess_exec, gather,
+                     get_running_loop, shield)
 from asyncio.subprocess import Process, DEVNULL, PIPE
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
 import errno
 from functools import partial
@@ -32,6 +34,9 @@ class AuthenticationError(Exception):
 
 class AuthorizationError(Exception):
     """Raised when getting authorization from a livestreaming service fails."""
+
+class StreamTimeoutError(Exception):
+    """Raised when awaiting a channel to come online times out."""
 
 class Channel(BaseModel): # type: ignore[misc]
     """Live stream channel.
@@ -126,15 +131,17 @@ class Service(BaseModel, Generic[L_co]): # type: ignore[misc]
 
     type: str
 
-    async def stream(self, channel_url: str) -> L_co:
+    async def stream(self, channel_url: str, *, timeout: float | None = None) -> L_co:
         """Open the live stream at the given *channel_url*.
+
+        Optionally, the channel is awaited to come online with a *timeout* in seconds.
 
         If required, the service is automatically reconnected.
         """
         service = self
         while True:
             try:
-                return await service.open_stream(channel_url)
+                return await service.open_stream(channel_url, timeout)
             except AuthenticationError as e:
                 try:
                     service = await self.reconnect()
@@ -142,8 +149,11 @@ class Service(BaseModel, Generic[L_co]): # type: ignore[misc]
                 except AuthorizationError:
                     raise e from None
 
-    async def open_stream(self, channel_url: str) -> L_co:
-        """Open the live stream at the given *channel_url*."""
+    async def open_stream(self, channel_url: str, timeout: float | None) -> L_co:
+        """Open the live stream at the given *channel_url*.
+
+        Optionally, the channel is awaited to come online with a *timeout* in seconds.
+        """
         raise NotImplementedError()
 
     async def reconnect(self) -> Self:
@@ -258,12 +268,22 @@ class LocalService(Service[LocalStream]): # type: ignore[misc]
     # pylint: disable=missing-function-docstring
 
     _channels: ClassVar[dict[str, Channel]] = {}
-    _streams: ClassVar[dict[str, LocalStream]] = {}
+    _streams: ClassVar[dict[str, Future[LocalStream]]] = {}
 
     type: Literal['local']
 
-    async def open_stream(self, channel_url: str) -> LocalStream:
-        return self._streams[channel_url]
+    async def open_stream(self, channel_url: str, timeout: float | None) -> LocalStream:
+        future = self._streams[channel_url]
+        try:
+            return future.result()
+        except InvalidStateError:
+            if timeout is None:
+                raise LookupError(channel_url) from None
+            try:
+                async with asyncio.timeout(timeout):
+                    return await shield(future)
+            except TimeoutError:
+                raise StreamTimeoutError() from None
 
     async def get_channels(self) -> list[Channel]:
         return list(self._channels.values())
@@ -274,13 +294,15 @@ class LocalService(Service[LocalStream]): # type: ignore[misc]
     @validate_call # type: ignore[misc]
     async def create_channel(self, name: Text) -> Channel:
         channel = Channel(url=f'streamfarer:{quote(name)}', name=name)
-        self._channels[channel.url] = channel
+        self._channels.setdefault(channel.url, channel)
+        future: Future[LocalStream] = get_running_loop().create_future()
+        self._streams.setdefault(channel.url, future)
         return channel
 
     async def delete_channel(self, channel_url: str) -> None:
         try:
-            await self._streams[channel_url].stop()
-        except KeyError:
+            await self._streams.pop(channel_url).result().stop()
+        except (KeyError, InvalidStateError):
             pass
         self._channels.pop(channel_url, None)
 
@@ -288,11 +310,13 @@ class LocalService(Service[LocalStream]): # type: ignore[misc]
         channel = await self.get_channel(channel_url)
         stream = LocalStream(channel=channel, service=self,
                              _delete=partial(self._delete_stream, channel_url))
-        self._streams[channel_url] = stream
+        self._streams[channel_url].set_result(stream)
         return stream
 
     def _delete_stream(self, channel_url: str) -> None:
-        self._streams.pop(channel_url, None)
+        if channel_url in self._streams:
+            future: Future[LocalStream] = get_running_loop().create_future()
+            self._streams[channel_url] = future
 
     def __str__(self) -> str:
         return '📺 Local livestreaming service'
@@ -321,13 +345,19 @@ class _TwitchSessionPayload(BaseModel): # type: ignore[misc]
     session: _Session
 
 class _TwitchNotificationPayload(BaseModel): # type: ignore[misc]
-    pass
+    class _Subscription(BaseModel): # type: ignore[misc]
+        type: str
+
+    subscription: _Subscription
 
 class _TwitchChannelRaidPayload(_TwitchNotificationPayload): # type: ignore[misc]
     class _Event(BaseModel): # type: ignore[misc]
         to_broadcaster_user_login: str
 
     event: _Event
+
+class _TwitchStreamOnlinePayload(_TwitchNotificationPayload): # type: ignore[misc]
+    pass
 
 class _TwitchStreamOfflinePayload(_TwitchNotificationPayload): # type: ignore[misc]
     pass
@@ -339,6 +369,7 @@ def _twitch_subscription_type(data: dict[str, object]) -> str:
 
 _AnyTwitchNotificationPayload = Annotated[
     Annotated[_TwitchChannelRaidPayload, Tag('channel.raid')] |
+    Annotated[_TwitchStreamOnlinePayload, Tag('stream.online')] |
     Annotated[_TwitchStreamOfflinePayload, Tag('stream.offline')],
     Discriminator(_twitch_subscription_type)
 ]
@@ -386,58 +417,42 @@ async def _post_twitch_token(oauth: WebAPI, endpoint: str, *, client_id: str, cl
             raise AuthorizationError(f'Failed authorization for {client_id}') from e
         raise
 
-async def _read_twitch_message(websocket: WebSocketClientConnection, *,
-                               keepalive: float = 0) -> _TwitchMessage:
-    async with timeout(keepalive + 20):
-        data = await websocket.read_message()
-    if data is None:
-        raise ConnectionResetError(errno.ECONNRESET, 'Closed stream')
-    try:
-        return _AnyTwitchMessageModel.validate_json(data)
-    except ValidationError as e:
-        error = OSError(errno.EPROTO, "Bad message")
-        error.add_note(data.decode(errors='replace') if isinstance(data, bytes) else data)
-        raise error from e
-
 class TwitchStream(Stream):
     """Twitch live stream."""
 
     service: Twitch
 
-    def __init__(self, channel: Channel, service: Twitch, _websocket: WebSocketClientConnection,
-                 _keepalive: float, _channel_id: str) -> None:
+    def __init__(
+        self, channel: Channel, service: Twitch,
+        _notifications: AsyncGenerator[_TwitchNotificationPayload], _channel_id: str
+    ) -> None:
         super().__init__(channel, service)
-        self._websocket = _websocket
-        self._keepalive = _keepalive
+        self._notifications = _notifications
         self._eof = False
         self._channel_id = _channel_id
 
     async def __anext__(self) -> Stream.Event:
-        while not self._eof:
-            message = await _read_twitch_message(self._websocket, keepalive=self._keepalive)
-            match message:
-                case _TwitchNotificationMessage():
-                    match message.payload:
-                        case _TwitchChannelRaidPayload():
-                            return Stream.RaidEvent(
-                                target_url=urljoin(Twitch.CHANNEL_BASE_URL,
-                                                   message.payload.event.to_broadcaster_user_login))
-                        case _TwitchStreamOfflinePayload():
-                            self._eof = True
-                            await self.aclose()
-                        case _:
-                            assert False
-                case _TwitchKeepaliveMessage():
-                    pass
-                case _TwitchReconnectMessage():
-                    await self.aclose()
-                case _:
-                    raise OSError(errno.EPROTO,
-                                  f"Unexpected message type {message.metadata.message_type}")
-        raise StopAsyncIteration()
+        try:
+            notification = await anext(self._notifications) # type: ignore[misc]
+        except StopAsyncIteration:
+            if self._eof:
+                raise
+            raise ConnectionResetError(errno.ECONNRESET, 'Closed stream') from None
+        match notification:
+            case _TwitchChannelRaidPayload():
+                return Stream.RaidEvent(
+                    target_url=urljoin(Twitch.CHANNEL_BASE_URL,
+                                       notification.event.to_broadcaster_user_login))
+            case _TwitchStreamOfflinePayload():
+                self._eof = True
+                await self.aclose()
+                raise StopAsyncIteration()
+            case _:
+                raise OSError(errno.EPROTO,
+                              f"Unexpected notification type {notification.subscription.type}")
 
     async def aclose(self) -> None:
-        self._websocket.close()
+        await self._notifications.aclose() # type: ignore[misc]
 
     async def raid(self, target_url: str) -> None:
         if self.service.api_url == TwitchAdapter.PRODUCTION_API_URL:
@@ -518,23 +533,69 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
         if process.returncode != 0:
             raise OSError(errno.EINVAL, f'Error {process.returncode}')
 
-    async def open_stream(self, channel_url: str) -> TwitchStream:
+    async def open_stream(self, channel_url: str, timeout: float | None = None) -> TwitchStream:
         user = await self._get_user(channel_url)
+        notifications = await self._notifications(user)
+
+        streams = Twitch._Page[object].model_validate(
+            await self._call('GET', 'streams', query={'user_id': user.id}))
+        if not streams.data:
+            if timeout is None:
+                raise LookupError(channel_url)
+            try:
+                async with asyncio.timeout(timeout):
+                    notification = await anext(notifications) # type: ignore[misc]
+            except TimeoutError:
+                raise StreamTimeoutError() from None
+            if not isinstance(notification, _TwitchStreamOnlinePayload):
+                raise OSError(errno.EPROTO,
+                              f"Unexpected notification type {notification.subscription.type}")
+
+        return TwitchStream(
+            channel=Channel(url=channel_url, name=user.display_name), service=self,
+            _notifications=notifications, _channel_id=user.id)
+
+    def _subscription(self, subscription_type: str, condition: dict[str, str],
+                      session_id: str) -> dict[str, object]:
+        return {
+            'type': subscription_type,
+            'version': '1',
+            'condition': condition,
+            'transport': {'method': 'websocket', 'session_id': session_id}
+        }
+
+    async def _read_message(self, websocket: WebSocketClientConnection, *,
+                            keepalive: float = 0) -> _TwitchMessage | None:
+        async with asyncio.timeout(keepalive + 20):
+            data = await websocket.read_message()
+        if data is None:
+            return None
+        try:
+            return _AnyTwitchMessageModel.validate_json(data)
+        except ValidationError as e:
+            error = OSError(errno.EPROTO, "Bad message")
+            error.add_note(data.decode(errors='replace') if isinstance(data, bytes) else data)
+            raise error from e
+
+    async def _notifications(self, user: _User) -> AsyncGenerator[_TwitchNotificationPayload]:
         websocket = await websocket_connect(self.websocket_url)
         try:
-            message = await _read_twitch_message(websocket)
+            message = await self._read_message(websocket)
+            if message is None:
+                raise ConnectionResetError(errno.ECONNRESET, 'Closed stream')
             if not isinstance(message, _TwitchWelcomeMessage):
                 raise OSError(errno.EPROTO,
                               f"Unexpected message type {message.metadata.message_type}")
+            session = message.payload.session
 
             eventsub = WebAPI(
                 self.eventsub_url,
                 headers={'Authorization': f'Bearer {self.token}', 'Client-Id': self.client_id})
             subscriptions = [
                 self._subscription('channel.raid', {'from_broadcaster_user_id': user.id},
-                                   message.payload.session.id),
-                self._subscription('stream.offline', {'broadcaster_user_id': user.id},
-                                   message.payload.session.id)
+                                   session.id),
+                self._subscription('stream.online', {'broadcaster_user_id': user.id}, session.id),
+                self._subscription('stream.offline', {'broadcaster_user_id': user.id}, session.id)
             ]
             try:
                 await gather(
@@ -545,28 +606,28 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
                     raise AuthenticationError(f'Failed authentication of {self.client_id}') from e
                 raise
 
-            streams = Twitch._Page[object].model_validate(
-                await self._call('GET', 'streams', query={'user_id': user.id}))
-            if not streams.data:
-                raise LookupError(channel_url)
-
-            return TwitchStream(
-                channel=Channel(url=channel_url, name=user.display_name), service=self,
-                _websocket=websocket,
-                _keepalive=message.payload.session.keepalive_timeout_seconds,
-                _channel_id=user.id)
+            async def generator() -> AsyncGenerator[_TwitchNotificationPayload]:
+                try:
+                    while True:
+                        message = await self._read_message(
+                            websocket, keepalive=session.keepalive_timeout_seconds)
+                        match message:
+                            case _TwitchNotificationMessage():
+                                yield message.payload
+                            case _TwitchKeepaliveMessage():
+                                pass
+                            case _TwitchReconnectMessage() | None:
+                                return
+                            case _:
+                                raise OSError(
+                                    errno.EPROTO,
+                                    f"Unexpected message type {message.metadata.message_type}")
+                finally:
+                    websocket.close()
+            return generator()
         except:
             websocket.close()
             raise
-
-    def _subscription(self, subscription_type: str, condition: dict[str, str],
-                      session_id: str) -> dict[str, object]:
-        return {
-            'type': subscription_type,
-            'version': '1',
-            'condition': condition,
-            'transport': {'method': 'websocket', 'session_id': session_id}
-        }
 
     async def reauthorize(self) -> Self:
         token = await _post_twitch_token(
