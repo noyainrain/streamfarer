@@ -13,6 +13,7 @@ from functools import partial
 from logging import getLogger
 import sqlite3
 from sqlite3 import IntegrityError, Row
+from textwrap import indent
 from typing import Annotated, ParamSpec, TypeVar
 
 from pydantic import Field, TypeAdapter, validate_call
@@ -24,7 +25,7 @@ from .services import (AuthenticationError, LocalService, LocalServiceAdapter, S
                        StreamTimeoutError, Twitch, TwitchAdapter)
 from .util import Connection, add_column, randstr
 
-VERSION = '0.1.8'
+VERSION = '0.1.9'
 
 _P = ParamSpec('_P')
 _R_co = TypeVar('_R_co', covariant=True)
@@ -67,7 +68,12 @@ class Bot:
                     logger.error('Failed to authenticate with the livestreaming service')
                     await asyncio.Event().wait()
                 except OSError as e:
-                    logger.warning('Failed to communicate with the livestreaming service (%s)', e)
+                    try:
+                        detail = '\n' + indent('\n'.join(e.__notes__), ' ' * 4)
+                    except AttributeError:
+                        detail = ''
+                    logger.warning('Failed to communicate with the livestreaming service (%s)%s', e,
+                                   detail)
                     await sleep(1)
         return wrapper
 

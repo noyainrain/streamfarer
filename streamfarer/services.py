@@ -602,9 +602,17 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
                     *(eventsub.call('POST', 'subscriptions', data=subscription)
                       for subscription in subscriptions))
             except WebAPI.Error as e:
-                if e.status == HTTPStatus.UNAUTHORIZED:
-                    raise AuthenticationError(f'Failed authentication of {self.client_id}') from e
-                raise
+                match e.status:
+                    case HTTPStatus.UNAUTHORIZED:
+                        raise AuthenticationError(
+                            f'Failed authentication of {self.client_id}'
+                        ) from e
+                    case HTTPStatus.TOO_MANY_REQUESTS:
+                        # CONFLICT is only relevant for duplicate subscriptions with the same
+                        # WebSocket
+                        raise OSError(errno.EAGAIN, 'Exceeded subscription limit') from e
+                    case _:
+                        raise
 
             async def generator() -> AsyncGenerator[_TwitchNotificationPayload]:
                 try:

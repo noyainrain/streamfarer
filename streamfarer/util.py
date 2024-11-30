@@ -13,7 +13,8 @@ from sqlite3 import OperationalError
 from typing import Generic, Protocol, TypeVar
 from urllib.parse import urlencode, urljoin, urlsplit
 
-from tornado.httpclient import AsyncHTTPClient, HTTPClientError, HTTPRequest
+from tornado.httpclient import AsyncHTTPClient, HTTPClientError, HTTPRequest, HTTPResponse
+from tornado.simple_httpclient import HTTPStreamClosedError, HTTPTimeoutError
 
 T_co = TypeVar("T_co", covariant=True)
 
@@ -114,6 +115,11 @@ class WebAPI:
         def __str__(self) -> str:
             return self.args[0]
 
+    @staticmethod
+    def _with_response(error: Exception, response: HTTPResponse) -> Exception:
+        error.add_note(response.body.decode(errors='replace'))
+        return error
+
     def __init__(self, url: str, *, query: Mapping[str, str] = {},
                  headers: Mapping[str, str] = {}) -> None:
         # pylint: disable=dangerous-default-value
@@ -155,23 +161,33 @@ class WebAPI:
             response = await AsyncHTTPClient().fetch(
                 HTTPRequest(url, method=method, headers=headers, body=body,
                             allow_nonstandard_methods=True))
+        except HTTPStreamClosedError as e:
+            raise ConnectionResetError(errno.ECONNRESET, f'{e} for {method} {url}') from e
+        except HTTPTimeoutError as e:
+            raise TimeoutError(errno.ETIMEDOUT, f'{e} for {method} {url}') from e
         except HTTPClientError as e:
-            if e.code >= 500:
-                # Also takes care of HTTPStreamClosedError and HTTPTimeoutError
-                raise OSError(errno.EPROTO, f'{e} for {method} {url}') from e
             assert e.response
             response = e.response
 
+        if response.code >= 500:
+            raise self._with_response(
+                OSError(errno.EPROTO, f'Error {response.code} for {method} {url}'),
+                response)
+
         try:
-            assert response.buffer
-            result: object = json.load(response.buffer)
+            result: object = json.loads(response.body)
             if not isinstance(result, dict):
                 raise TypeError()
         except (UnicodeDecodeError, JSONDecodeError, TypeError) as e:
-            raise OSError(errno.EPROTO, f'Bad response format for {method} {url}') from e
+            raise self._with_response(
+                OSError(errno.EPROTO, f'Bad response format for {method} {url}'), response
+            ) from e
 
         if not 200 <= response.code < 300:
-            raise self.Error(f'Error {response.code} for {method} {url}', result, response.code)
+            raise self._with_response(
+                WebAPI.Error(f'Error {response.code} for {method} {url}', result, response.code),
+                response)
+
         return result
 
 class Cursor(sqlite3.Cursor, Generic[T_co]):
