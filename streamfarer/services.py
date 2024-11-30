@@ -63,12 +63,17 @@ class Stream(AbstractAsyncContextManager['Stream']):
 
        Related channel.
 
+    .. attribute: category
+
+       Stream category.
+
     .. attribute:: service
 
        Livestreaming service.
     """
 
     channel: Channel
+    category: Text
     service: Service[Stream]
 
     class Event(BaseModel): # type: ignore[misc]
@@ -84,8 +89,9 @@ class Stream(AbstractAsyncContextManager['Stream']):
 
         target_url: str
 
-    def __init__(self, channel: Channel, service: Service[Stream]) -> None:
+    def __init__(self, channel: Channel, category: Text, service: Service[Stream]) -> None:
         self.channel = channel
+        self.category = category
         self.service = service
 
     def __aiter__(self) -> Self:
@@ -201,8 +207,8 @@ class Service(BaseModel, Generic[L_co]): # type: ignore[misc]
         """
         raise RuntimeError('Unsupported operation')
 
-    async def play(self, channel_url: str) -> L_co:
-        """Broadcast a live stream at the given *channel_url*.
+    async def play(self, channel_url: str, category: Text) -> L_co:
+        """Broadcast a live stream at the given *channel_url* in a *category*.
 
         If the service does not support the utility, a :exc:`RuntimeError` is raised.
         """
@@ -235,9 +241,9 @@ class LocalStream(Stream):
 
     service: LocalService
 
-    def __init__(self, channel: Channel, service: LocalService,
+    def __init__(self, channel: Channel, category: Text, service: LocalService,
                  _delete: Callable[[], None]) -> None:
-        super().__init__(channel, service)
+        super().__init__(channel, category, service)
         self._events: Queue[Stream.Event | Exception] = Queue()
         self._error: Exception | None = None
         self._delete = _delete
@@ -306,9 +312,10 @@ class LocalService(Service[LocalStream]): # type: ignore[misc]
             pass
         self._channels.pop(channel_url, None)
 
-    async def play(self, channel_url: str) -> LocalStream:
+    @validate_call # type: ignore[misc]
+    async def play(self, channel_url: str, category: Text) -> LocalStream:
         channel = await self.get_channel(channel_url)
-        stream = LocalStream(channel=channel, service=self,
+        stream = LocalStream(channel=channel, category=category, service=self,
                              _delete=partial(self._delete_stream, channel_url))
         self._streams[channel_url].set_result(stream)
         return stream
@@ -423,10 +430,10 @@ class TwitchStream(Stream):
     service: Twitch
 
     def __init__(
-        self, channel: Channel, service: Twitch,
+        self, channel: Channel, category: Text, service: Twitch,
         _notifications: AsyncGenerator[_TwitchNotificationPayload], _channel_id: str
     ) -> None:
-        super().__init__(channel, service)
+        super().__init__(channel, category, service)
         self._notifications = _notifications
         self._eof = False
         self._channel_id = _channel_id
@@ -506,6 +513,9 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
         id: str
         display_name: str
 
+    class _Stream(BaseModel): # type: ignore[misc]
+        game_name: str
+
     @staticmethod
     async def start_cli(*args: str, signal: str | None = None) -> Process:
         """Plumbing: Start Twitch CLI with command-line arguments *args*.
@@ -537,9 +547,15 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
         user = await self._get_user(channel_url)
         notifications = await self._notifications(user)
 
-        streams = Twitch._Page[object].model_validate(
-            await self._call('GET', 'streams', query={'user_id': user.id}))
-        if not streams.data:
+        while True:
+            streams = Twitch._Page[Twitch._Stream].model_validate(
+                await self._call('GET', 'streams', query={'user_id': user.id}))
+            try:
+                stream = streams.data[0]
+                break
+            except IndexError:
+                pass
+
             if timeout is None:
                 raise LookupError(channel_url)
             try:
@@ -552,8 +568,8 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
                               f"Unexpected notification type {notification.subscription.type}")
 
         return TwitchStream(
-            channel=Channel(url=channel_url, name=user.display_name), service=self,
-            _notifications=notifications, _channel_id=user.id)
+            channel=Channel(url=channel_url, name=user.display_name), category=stream.game_name,
+            service=self, _notifications=notifications, _channel_id=user.id)
 
     def _subscription(self, subscription_type: str, condition: dict[str, str],
                       session_id: str) -> dict[str, object]:

@@ -17,6 +17,7 @@ class ServiceTestProtocol(Protocol):
     service: Service[Stream]
     channel: Channel
     offline_channel: Channel
+    category: str
 
     # pylint: disable=invalid-name
     def assertEqual(self, first: object, second: object) -> None: ...
@@ -51,6 +52,7 @@ class WithServiceTests:
         stream = await self.service.stream(self.channel.url)
         async with stream:
             self.assertEqual(stream.channel, self.channel)
+            self.assertEqual(stream.category, self.category)
 
     async def test_stream_unknown_channel(self: ServiceTestProtocol) -> None:
         with self.assertRaises(LookupError):
@@ -74,12 +76,14 @@ class LocalStreamTest(TestCase, WithStreamTests):
         await super().asyncSetUp()
         self.service = self.local
         self.offline_channel = await self.local.create_channel('Misha')
+        self.category = self.stream.category
 
 class LocalServiceTest(TestCase, WithServiceTests):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
         self.service = self.local
         self.offline_channel = await self.local.create_channel('Misha')
+        self.category = self.stream.category
 
 class TwitchTestCase(TestCase):
     _API_PORT = 16160
@@ -99,6 +103,7 @@ class TwitchTestCase(TestCase):
 
     class _Stream(BaseModel): # type: ignore[misc]
         user_id: str
+        game_name: str
 
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
@@ -120,13 +125,15 @@ class TwitchTestCase(TestCase):
             await units.call('GET', 'users'))
         streams = TwitchTestCase._Page[TwitchTestCase._Stream].model_validate(
             await units.call('GET', 'streams'))
-        online_user_ids = {stream.user_id for stream in streams.data}
-        user = next(user for user in users.data if user.id in online_user_ids)
-        offline_user = next(user for user in users.data if user.id not in online_user_ids)
+        streams_by_user_id = {stream.user_id: stream for stream in streams.data}
+        user, stream = next((user, stream)
+                            for user in users.data if (stream := streams_by_user_id.get(user.id)))
+        offline_user = next(user for user in users.data if user.id not in streams_by_user_id)
         self.code = user.id
         self.channel = Channel(url=f'https://www.twitch.tv/{user.login}', name=user.display_name)
         self.offline_channel = Channel(url=f'https://www.twitch.tv/{offline_user.login}',
                                        name=offline_user.display_name)
+        self.category = stream.game_name
 
         self.redirect_uri = ''
         self.api_url = f'http://localhost:{self._API_PORT}/mock/'

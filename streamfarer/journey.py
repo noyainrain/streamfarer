@@ -37,6 +37,10 @@ class Stay(BaseModel): # type: ignore[misc]
 
        Live stream channel.
 
+    .. attribute:: category
+
+       Live stream category.
+
     .. attribute:: start_time
 
        Time the stay started.
@@ -49,6 +53,7 @@ class Stay(BaseModel): # type: ignore[misc]
     id: str
     journey_id: str
     channel: Channel
+    category: Text
     start_time: datetime
     end_time: datetime | None
 
@@ -214,10 +219,13 @@ class Journey(BaseModel): # type: ignore[misc]
                 raise EndedJourneyError(f'Ended journey {self.id}')
             rows = db.execute(
                 """
-                INSERT INTO stays(id, journey_id, channel_url, channel_name, start_time, end_time)
-                VALUES (?, ?, ?, ?, ?, ?) RETURNING *
+                INSERT INTO stays (
+                    id, journey_id, channel_url, channel_name, category, start_time, end_time
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *
                 """,
-                (randstr(), self.id, stream.channel.url, stream.channel.name, now, None))
+                (randstr(), self.id, stream.channel.url, stream.channel.name, stream.category, now,
+                 None))
             stay = Stay.model_validate(nested(dict(next(rows)), 'channel'))
         bot.dispatch_event(Event(type='journey-travel-on'))
         return stay

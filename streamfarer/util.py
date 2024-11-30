@@ -68,8 +68,11 @@ def text(arg: str) -> str:
         raise ArgumentTypeError()
     return arg
 
-def add_column(db: sqlite3.Connection, table: str, column: str) -> None:
-    """Add a *column* to a *table* in a database *db* if it does not exist yet."""
+def add_column(db: sqlite3.Connection, table: str, column: str, value: object = None) -> None:
+    """Add a *column* to a *table* in a database *db* if it does not exist yet.
+
+    Existing rows are initialized with a *value*.
+    """
     table = table.replace('"', '""')
     column = column.replace('"', '""')
     try:
@@ -77,6 +80,9 @@ def add_column(db: sqlite3.Connection, table: str, column: str) -> None:
     except OperationalError as e:
         if column not in str(e):
             raise
+    else:
+        if value is not None:
+            db.execute(f'UPDATE "{table}" SET "{column}" = ?', (value, ))
 
 class WebAPI:
     """Simple JSON REST API client.

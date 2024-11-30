@@ -51,10 +51,13 @@ class AddColumnTest(TestCase):
         db = sqlite3.connect(':memory:')
         with db:
             db.execute('CREATE TABLE cats (name)')
-            add_column(db, 'cats', '"age"')
+            db.execute("INSERT INTO cats (name) VALUES ('Frank')")
+            add_column(db, 'cats', '"age"', 7)
             rows = db.execute('SELECT * FROM cats')
             columns: tuple[tuple[str, None, None, None, None, None, None], ...] = rows.description
+            cat: tuple[str, int] = next(rows)
         self.assertEqual([column[0] for column in columns], ['name', '"age"']) # type: ignore[misc]
+        self.assertEqual(cat, ('Frank', 7))
 
 class WebAPITest(AsyncHTTPTestCase):
     def setUp(self) -> None:

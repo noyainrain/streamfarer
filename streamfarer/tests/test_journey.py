@@ -71,12 +71,13 @@ class JourneyTest(TestCase):
 
     async def test_travel_on(self) -> None:
         channel = await self.local.create_channel('Misha')
-        await self.local.play(channel.url)
+        await self.local.play(channel.url, self.stream.category)
         self.tick()
 
         stay = await self.journey.travel_on(channel.url)
         self.assertEqual(stay.journey_id, self.journey.id)
         self.assertEqual(stay.channel, channel)
+        self.assertEqual(stay.category, self.stream.category)
         self.assertEqual(stay.start_time, self.now())
         self.assertIsNone(stay.end_time)
         stays = self.journey.get_stays()
@@ -86,7 +87,7 @@ class JourneyTest(TestCase):
 
     async def test_travel_on_ended_journey(self) -> None:
         channel = await self.local.create_channel('Misha')
-        await self.local.play(channel.url)
+        await self.local.play(channel.url, self.stream.category)
         self.journey.end()
         with self.assertRaises(EndedJourneyError):
             await self.journey.travel_on(channel.url)

@@ -25,7 +25,7 @@ from .services import (AuthenticationError, LocalService, LocalServiceAdapter, S
                        StreamTimeoutError, Twitch, TwitchAdapter)
 from .util import Connection, add_column, randstr
 
-VERSION = '0.1.9'
+VERSION = '0.1.10'
 
 _P = ParamSpec('_P')
 _R_co = TypeVar('_R_co', covariant=True)
@@ -242,10 +242,13 @@ class Bot:
             journey = Journey.model_validate(dict(next(rows)))
             db.execute(
                 """
-                INSERT INTO stays(id, journey_id, channel_url, channel_name, start_time, end_time)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO stays (
+                    id, journey_id, channel_url, channel_name, category, start_time, end_time
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (randstr(), journey.id, stream.channel.url, stream.channel.name, start_time, None))
+                (randstr(), journey.id, stream.channel.url, stream.channel.name, stream.category,
+                 start_time, None))
             return journey
 
     def get_services(self) -> list[Service[Stream]]:
@@ -304,6 +307,7 @@ class Bot:
                     journey_id REFERENCES journeys,
                     channel_url,
                     channel_name,
+                    category,
                     start_time,
                     end_time
                 )
@@ -352,3 +356,6 @@ class Bot:
                 UPDATE services SET refresh_token = ''
                 WHERE type = 'twitch' AND refresh_token IS NULL
                 """)
+
+            # Update Stay.category
+            add_column(db, 'stays', 'category', '?')
