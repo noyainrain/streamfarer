@@ -8,6 +8,7 @@ from asyncio import (Future, InvalidStateError, Queue, create_subprocess_exec, g
 from asyncio.subprocess import Process, DEVNULL, PIPE
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
 import errno
 from functools import partial
 from http import HTTPStatus
@@ -56,8 +57,8 @@ class Channel(BaseModel): # type: ignore[misc]
 class Stream(AbstractAsyncContextManager['Stream']):
     """Live stream.
 
-    Any operation may raise an :exc:`AuthenticationError` if authentication fails or an
-    :exc:`OSError` if there is a problem communicating with the livestreaming service.
+    Reading from the stream may raise an :exc:`OSError` if there is a problem communicating with the
+    livestreaming service.
 
     .. attribute:: channel
 
@@ -109,20 +110,6 @@ class Stream(AbstractAsyncContextManager['Stream']):
         traceback: TracebackType | None
     ) -> None:
         await self.aclose()
-
-    async def raid(self, target_url: str) -> None:
-        """Raid the stream at the given *target_url*.
-
-        If the stream does not support the utility, a :exc:`RuntimeError` is raised.
-        """
-        raise RuntimeError('Unsupported operation')
-
-    async def stop(self) -> None:
-        """Stop the stream broadcast.
-
-        If the stream does not support the utility, a :exc:`RuntimeError` is raised.
-        """
-        raise RuntimeError('Unsupported operation')
 
 class Service(BaseModel, Generic[L_co]): # type: ignore[misc]
     """Connected livestreaming service.
@@ -207,8 +194,22 @@ class Service(BaseModel, Generic[L_co]): # type: ignore[misc]
         """
         raise RuntimeError('Unsupported operation')
 
-    async def play(self, channel_url: str, category: Text) -> L_co:
+    async def play(self, channel_url: str, category: Text) -> None:
         """Broadcast a live stream at the given *channel_url* in a *category*.
+
+        If the service does not support the utility, a :exc:`RuntimeError` is raised.
+        """
+        raise RuntimeError('Unsupported operation')
+
+    async def stop(self, channel_url: str) -> None:
+        """Stop the live stream broadcast at the given *channel_url*.
+
+        If the service does not support the utility, a :exc:`RuntimeError` is raised.
+        """
+        raise RuntimeError('Unsupported operation')
+
+    async def raid(self, channel_url: str, target_url: str) -> None:
+        """Raid the live stream at the given *target_url* from the given *channel_url*.
 
         If the service does not support the utility, a :exc:`RuntimeError` is raised.
         """
@@ -242,11 +243,11 @@ class LocalStream(Stream):
     service: LocalService
 
     def __init__(self, channel: Channel, category: Text, service: LocalService,
-                 _delete: Callable[[], None]) -> None:
+                 _events: Queue[Stream.Event | Exception], _close: Callable[[], None]) -> None:
         super().__init__(channel, category, service)
-        self._events: Queue[Stream.Event | Exception] = Queue()
+        self._events = _events
         self._error: Exception | None = None
-        self._delete = _delete
+        self._close = _close
 
     async def __anext__(self) -> Stream.Event:
         event = self._error or await self._events.get()
@@ -256,15 +257,7 @@ class LocalStream(Stream):
         return event
 
     async def aclose(self) -> None:
-        self._events.put_nowait(ConnectionResetError(errno.ECONNRESET, 'Closed stream'))
-
-    async def raid(self, target_url: str) -> None:
-        channel = await self.service.get_channel(target_url)
-        await self._events.put(Stream.RaidEvent(target_url=channel.url))
-
-    async def stop(self) -> None:
-        self._events.put_nowait(StopAsyncIteration())
-        self._delete()
+        self._close()
 
 class LocalService(Service[LocalStream]): # type: ignore[misc]
     """Local livestreaming service."""
@@ -273,23 +266,39 @@ class LocalService(Service[LocalStream]): # type: ignore[misc]
     # https://github.com/pylint-dev/pylint/issues/9766)
     # pylint: disable=missing-function-docstring
 
+    @dataclass
+    class _Broadcast:
+        category: Text
+        streams: set[Queue[Stream.Event | Exception]]
+
     _channels: ClassVar[dict[str, Channel]] = {}
-    _streams: ClassVar[dict[str, Future[LocalStream]]] = {}
+    _broadcasts: ClassVar[dict[str, Future[_Broadcast]]] = {}
 
     type: Literal['local']
 
     async def open_stream(self, channel_url: str, timeout: float | None) -> LocalStream:
-        future = self._streams[channel_url]
+        channel = await self.get_channel(channel_url)
+        future = self._broadcasts[channel_url]
         try:
-            return future.result()
+            broadcast = future.result()
         except InvalidStateError:
             if timeout is None:
                 raise LookupError(channel_url) from None
             try:
                 async with asyncio.timeout(timeout):
-                    return await shield(future)
+                    broadcast = await shield(future)
             except TimeoutError:
                 raise StreamTimeoutError() from None
+
+        events: Queue[Stream.Event | Exception] = Queue()
+        broadcast.streams.add(events)
+        stream = LocalStream(channel=channel, category=broadcast.category, service=self,
+                             _events=events, _close=partial(self._close_stream, broadcast, events))
+        return stream
+
+    def _close_stream(self, broadcast: _Broadcast, events: Queue[Stream.Event | Exception]) -> None:
+        broadcast.streams.discard(events)
+        events.put_nowait(ConnectionResetError(errno.ECONNRESET, 'Closed stream'))
 
     async def get_channels(self) -> list[Channel]:
         return list(self._channels.values())
@@ -301,29 +310,41 @@ class LocalService(Service[LocalStream]): # type: ignore[misc]
     async def create_channel(self, name: Text) -> Channel:
         channel = Channel(url=f'streamfarer:{quote(name)}', name=name)
         self._channels.setdefault(channel.url, channel)
-        future: Future[LocalStream] = get_running_loop().create_future()
-        self._streams.setdefault(channel.url, future)
+        future: Future[LocalService._Broadcast] = get_running_loop().create_future()
+        self._broadcasts.setdefault(channel.url, future)
         return channel
 
     async def delete_channel(self, channel_url: str) -> None:
-        try:
-            await self._streams.pop(channel_url).result().stop()
-        except (KeyError, InvalidStateError):
-            pass
+        await self.stop(channel_url)
+        self._broadcasts.pop(channel_url, None)
         self._channels.pop(channel_url, None)
 
     @validate_call # type: ignore[misc]
-    async def play(self, channel_url: str, category: Text) -> LocalStream:
-        channel = await self.get_channel(channel_url)
-        stream = LocalStream(channel=channel, category=category, service=self,
-                             _delete=partial(self._delete_stream, channel_url))
-        self._streams[channel_url].set_result(stream)
-        return stream
+    async def play(self, channel_url: str, category: Text) -> None:
+        try:
+            self._broadcasts[channel_url].set_result(
+                LocalService._Broadcast(category=category, streams=set()))
+        except InvalidStateError:
+            pass
 
-    def _delete_stream(self, channel_url: str) -> None:
-        if channel_url in self._streams:
-            future: Future[LocalStream] = get_running_loop().create_future()
-            self._streams[channel_url] = future
+    async def stop(self, channel_url: str) -> None:
+        try:
+            broadcast = self._broadcasts[channel_url].result()
+        except (KeyError, InvalidStateError):
+            return
+        future: Future[LocalService._Broadcast] = get_running_loop().create_future()
+        self._broadcasts[channel_url] = future
+        for events in broadcast.streams:
+            events.put_nowait(StopAsyncIteration())
+
+    async def raid(self, channel_url: str, target_url: str) -> None:
+        try:
+            broadcast = self._broadcasts[channel_url].result()
+        except InvalidStateError:
+            raise LookupError(channel_url) from None
+        target = await self.get_channel(target_url)
+        for events in broadcast.streams:
+            events.put_nowait(Stream.RaidEvent(target_url=target.url))
 
     def __str__(self) -> str:
         return '📺 Local livestreaming service'
@@ -429,14 +450,11 @@ class TwitchStream(Stream):
 
     service: Twitch
 
-    def __init__(
-        self, channel: Channel, category: Text, service: Twitch,
-        _notifications: AsyncGenerator[_TwitchNotificationPayload], _channel_id: str
-    ) -> None:
+    def __init__(self, channel: Channel, category: Text, service: Twitch,
+                 _notifications: AsyncGenerator[_TwitchNotificationPayload]) -> None:
         super().__init__(channel, category, service)
         self._notifications = _notifications
         self._eof = False
-        self._channel_id = _channel_id
 
     async def __anext__(self) -> Stream.Event:
         try:
@@ -460,19 +478,6 @@ class TwitchStream(Stream):
 
     async def aclose(self) -> None:
         await self._notifications.aclose() # type: ignore[misc]
-
-    async def raid(self, target_url: str) -> None:
-        if self.service.api_url == TwitchAdapter.PRODUCTION_API_URL:
-            raise RuntimeError('Unsupported operation')
-        user = await self.service._get_user(target_url)
-        await Twitch.cli('event', 'trigger', '--transport=websocket',
-                         f'--from-user={self._channel_id}', f'--to-user={user.id}', 'raid')
-
-    async def stop(self) -> None:
-        if self.service.api_url == TwitchAdapter.PRODUCTION_API_URL:
-            raise RuntimeError('Unsupported operation')
-        await Twitch.cli('event', 'trigger', '--transport=websocket',
-                         f'--to-user={self._channel_id}', 'streamdown')
 
 class Twitch(Service[TwitchStream]): # type: ignore[misc]
     """Twitch connection.
@@ -567,9 +572,8 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
                 raise OSError(errno.EPROTO,
                               f"Unexpected notification type {notification.subscription.type}")
 
-        return TwitchStream(
-            channel=Channel(url=channel_url, name=user.display_name), category=stream.game_name,
-            service=self, _notifications=notifications, _channel_id=user.id)
+        return TwitchStream(channel=Channel(url=channel_url, name=user.display_name),
+                            category=stream.game_name, service=self, _notifications=notifications)
 
     def _subscription(self, subscription_type: str, condition: dict[str, str],
                       session_id: str) -> dict[str, object]:
@@ -663,6 +667,21 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
                 'token': token.access_token,
                 'refresh_token': token.refresh_token
             })
+
+    async def stop(self, channel_url: str) -> None:
+        if self.api_url == TwitchAdapter.PRODUCTION_API_URL:
+            raise RuntimeError('Unsupported operation')
+        user = await self._get_user(channel_url)
+        await Twitch.cli('event', 'trigger', '--transport=websocket', f'--to-user={user.id}',
+                         'streamdown')
+
+    async def raid(self, channel_url: str, target_url: str) -> None:
+        if self.api_url == TwitchAdapter.PRODUCTION_API_URL:
+            raise RuntimeError('Unsupported operation')
+        user = await self._get_user(channel_url)
+        target = await self._get_user(target_url)
+        await Twitch.cli('event', 'trigger', '--transport=websocket', f'--from-user={user.id}',
+                         f'--to-user={target.id}', 'raid')
 
     async def _call(self, method: str, endpoint: str, *, data: Mapping[str, object] | None = None,
                     query: Mapping[str, str] = {}) -> dict[str, object]:

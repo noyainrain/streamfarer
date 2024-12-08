@@ -1,6 +1,6 @@
 # pylint: disable=missing-docstring
 
-from asyncio import create_task
+from asyncio import create_task, sleep
 from datetime import UTC, datetime, timedelta
 import logging
 from tempfile import NamedTemporaryFile
@@ -27,7 +27,8 @@ class TestCase(IsolatedAsyncioTestCase):
         for channel in await self.local.get_channels():
             await self.local.delete_channel(channel.url)
         self.channel = await self.local.create_channel('Frank')
-        self.stream = await self.local.play(self.channel.url, 'Just Catting')
+        self.category = 'Just Catting'
+        await self.local.play(self.channel.url, self.category)
 
     async def asyncTearDown(self) -> None:
         await self.events.aclose() # type: ignore[misc]
@@ -43,21 +44,24 @@ class TestCase(IsolatedAsyncioTestCase):
 class BotTestCase(TestCase):
     async def test_run(self) -> None:
         next_channel = await self.local.create_channel('Misha')
-        next_stream = await self.local.play(next_channel.url, self.stream.category)
+        await self.local.play(next_channel.url, self.category)
         await self.bot.start_journey(self.channel.url, 'Roaming')
 
         task = create_task(self.bot.run())
         try:
+            # Let the task start up
+            await sleep(0)
+
             self.tick()
-            await self.stream.raid(next_channel.url)
+            await self.local.raid(self.channel.url, next_channel.url)
             event: Event = await anext(self.events)
             self.assertEqual(event.type, 'journey-travel-on')
 
-            await next_stream.stop()
+            await self.local.stop(next_channel.url)
             event = await anext(self.events)
             self.assertEqual(event.type, 'journey-end')
 
-            await self.local.play(next_channel.url, next_stream.category)
+            await self.local.play(next_channel.url, self.category)
             event = await anext(self.events)
             self.assertEqual(event.type, 'journey-resume')
         finally:
@@ -77,7 +81,7 @@ class BotTestCase(TestCase):
         self.assertEqual(len(stays), 1)
         stay = stays[0]
         self.assertEqual(stay.channel, self.channel)
-        self.assertEqual(stay.category, self.stream.category)
+        self.assertEqual(stay.category, self.category)
         self.assertEqual(stay.start_time, self.now())
         self.assertIsNone(stay.end_time)
         self.assertEqual(stay.get_journey(), journey)

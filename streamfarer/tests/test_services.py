@@ -28,14 +28,14 @@ class WithStreamTests:
     async def test_anext(self: ServiceTestProtocol) -> None:
         stream = await self.service.stream(self.channel.url)
         async with stream:
-            await stream.stop()
+            await self.service.stop(self.channel.url)
             with self.assertRaises(StopAsyncIteration):
                 await anext(stream)
 
     async def test_anext_on_raid(self: ServiceTestProtocol) -> None:
         stream = await self.service.stream(self.channel.url)
         async with stream:
-            await stream.raid(self.offline_channel.url)
+            await self.service.raid(self.channel.url, self.offline_channel.url)
             event = await anext(stream)
             assert isinstance(event, Stream.RaidEvent)
             # Skip checking target_url because the Twitch mock server raids the fake channel
@@ -76,14 +76,12 @@ class LocalStreamTest(TestCase, WithStreamTests):
         await super().asyncSetUp()
         self.service = self.local
         self.offline_channel = await self.local.create_channel('Misha')
-        self.category = self.stream.category
 
 class LocalServiceTest(TestCase, WithServiceTests):
     async def asyncSetUp(self) -> None:
         await super().asyncSetUp()
         self.service = self.local
         self.offline_channel = await self.local.create_channel('Misha')
-        self.category = self.stream.category
 
 class TwitchTestCase(TestCase):
     _API_PORT = 16160
