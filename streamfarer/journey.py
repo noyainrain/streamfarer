@@ -158,34 +158,34 @@ class Journey(BaseModel): # type: ignore[misc]
         :exc:`OSError` is raised.
         """
         bot = context.bot.get()
-        await bot.stream(self.get_latest_stay().channel.url, timeout=timeout)
-
-        with bot.transaction() as db:
-            try:
-                rows = db.execute(
+        stream = await bot.stream(self.get_latest_stay().channel.url, timeout=timeout)
+        async with stream:
+            with bot.transaction() as db:
+                try:
+                    rows = db.execute(
+                        """
+                        UPDATE journeys SET end_time = NULL WHERE id = ? AND deleted = 0
+                        RETURNING
+                            *,
+                            (SELECT id = ? FROM journeys ORDER BY start_time DESC LIMIT 1) AS latest
+                        """,
+                        (self.id, self.id))
+                    row = dict(next(rows))
+                    if not row['latest']:
+                        raise PastJourneyError(f'Past journey {self.id}')
+                    journey = Journey.model_validate(row)
+                except IntegrityError as e:
+                    if 'journeys_end_time_index' in str(e):
+                        raise PastJourneyError(f'Past journey {self.id}') from None
+                    raise
+                except StopIteration:
+                    raise KeyError(self.id) from None
+                db.execute(
                     """
-                    UPDATE journeys SET end_time = NULL WHERE id = ? AND deleted = 0
-                    RETURNING
-                        *,
-                        (SELECT id = ? FROM journeys ORDER BY start_time DESC LIMIT 1) AS latest
+                    UPDATE stays SET end_time = NULL WHERE journey_id = ? ORDER BY start_time DESC
+                    LIMIT 1
                     """,
-                    (self.id, self.id))
-                row = dict(next(rows))
-                if not row['latest']:
-                    raise PastJourneyError(f'Past journey {self.id}')
-                journey = Journey.model_validate(row)
-            except IntegrityError as e:
-                if 'journeys_end_time_index' in str(e):
-                    raise PastJourneyError(f'Past journey {self.id}') from None
-                raise
-            except StopIteration:
-                raise KeyError(self.id) from None
-            db.execute(
-                """
-                UPDATE stays SET end_time = NULL WHERE journey_id = ? ORDER BY start_time DESC
-                LIMIT 1
-                """,
-                (self.id, ))
+                    (self.id, ))
         bot.dispatch_event(Event(type='journey-resume'))
         return journey
 
@@ -208,25 +208,25 @@ class Journey(BaseModel): # type: ignore[misc]
         """
         bot = context.bot.get()
         stream = await bot.stream(channel_url)
-
-        with bot.transaction() as db:
-            now = bot.now().isoformat()
-            # Simplify the query by handling deleted as ended journeys
-            rows = db.execute(
-                'UPDATE stays SET end_time = ? WHERE journey_id = ? AND end_time IS NULL',
-                (now, self.id))
-            if not rows.rowcount:
-                raise EndedJourneyError(f'Ended journey {self.id}')
-            rows = db.execute(
-                """
-                INSERT INTO stays (
-                    id, journey_id, channel_url, channel_name, category, start_time, end_time
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *
-                """,
-                (randstr(), self.id, stream.channel.url, stream.channel.name, stream.category, now,
-                 None))
-            stay = Stay.model_validate(nested(dict(next(rows)), 'channel'))
+        async with stream:
+            with bot.transaction() as db:
+                now = bot.now().isoformat()
+                # Simplify the query by handling deleted as ended journeys
+                rows = db.execute(
+                    'UPDATE stays SET end_time = ? WHERE journey_id = ? AND end_time IS NULL',
+                    (now, self.id))
+                if not rows.rowcount:
+                    raise EndedJourneyError(f'Ended journey {self.id}')
+                rows = db.execute(
+                    """
+                    INSERT INTO stays (
+                        id, journey_id, channel_url, channel_name, category, start_time, end_time
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *
+                    """,
+                    (randstr(), self.id, stream.channel.url, stream.channel.name, stream.category,
+                     now, None))
+                stay = Stay.model_validate(nested(dict(next(rows)), 'channel'))
         bot.dispatch_event(Event(type='journey-travel-on'))
         return stay
 

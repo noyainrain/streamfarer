@@ -25,7 +25,7 @@ from .services import (AuthenticationError, LocalService, LocalServiceAdapter, S
                        StreamTimeoutError, Twitch, TwitchAdapter)
 from .util import Connection, add_column, randstr
 
-VERSION = '0.1.11'
+VERSION = '0.1.12'
 
 _P = ParamSpec('_P')
 _R_co = TypeVar('_R_co', covariant=True)
@@ -225,31 +225,31 @@ class Bot:
         :exc:`OSError` is raised.
         """
         stream = await self.stream(channel_url)
-
-        with self.transaction() as db:
-            start_time = self.now().isoformat()
-            try:
-                rows = db.execute(
+        async with stream:
+            with self.transaction() as db:
+                start_time = self.now().isoformat()
+                try:
+                    rows = db.execute(
+                        """
+                        INSERT INTO journeys (id, title, start_time, end_time, deleted)
+                        VALUES (?, ?, ?, ?, ?) RETURNING *
+                        """,
+                        (randstr(), title, start_time, None, False))
+                except IntegrityError as e:
+                    if 'journeys_end_time_index' in str(e):
+                        raise OngoingJourneyError('Ongoing journey') from None
+                    raise
+                journey = Journey.model_validate(dict(next(rows)))
+                db.execute(
                     """
-                    INSERT INTO journeys (id, title, start_time, end_time, deleted)
-                    VALUES (?, ?, ?, ?, ?) RETURNING *
+                    INSERT INTO stays (
+                        id, journey_id, channel_url, channel_name, category, start_time, end_time
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (randstr(), title, start_time, None, False))
-            except IntegrityError as e:
-                if 'journeys_end_time_index' in str(e):
-                    raise OngoingJourneyError('Ongoing journey') from None
-                raise
-            journey = Journey.model_validate(dict(next(rows)))
-            db.execute(
-                """
-                INSERT INTO stays (
-                    id, journey_id, channel_url, channel_name, category, start_time, end_time
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (randstr(), journey.id, stream.channel.url, stream.channel.name, stream.category,
-                 start_time, None))
-            return journey
+                    (randstr(), journey.id, stream.channel.url, stream.channel.name,
+                     stream.category, start_time, None))
+                return journey
 
     def get_services(self) -> list[Service[Stream]]:
         """Get connected livestreaming services."""
