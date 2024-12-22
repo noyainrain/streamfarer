@@ -86,6 +86,10 @@ class LocalServiceTest(TestCase, WithServiceTests):
 class TwitchTestCase(TestCase):
     _API_PORT = 16160
     _WEBSOCKET_PORT = 16161
+    # Hardcoded in Twitch CLI (see
+    # https://github.com/twitchdev/twitch-cli/blob/v1.1.24/internal/database/user.go#L106)
+    _PROFILE_IMAGE_URL = ('https://static-cdn.jtvnw.net/jtv_user_pictures/'
+                          '8a6381c7-d0c0-4576-b179-38bd5ce1d6af-profile_image-300x300.png')
 
     class _Page(BaseModel, Generic[T]): # type: ignore[misc]
         data: list[T]
@@ -128,9 +132,11 @@ class TwitchTestCase(TestCase):
                             for user in users.data if (stream := streams_by_user_id.get(user.id)))
         offline_user = next(user for user in users.data if user.id not in streams_by_user_id)
         self.code = user.id
-        self.channel = Channel(url=f'https://www.twitch.tv/{user.login}', name=user.display_name)
-        self.offline_channel = Channel(url=f'https://www.twitch.tv/{offline_user.login}',
-                                       name=offline_user.display_name)
+        self.channel = Channel(url=f'https://www.twitch.tv/{user.login}', name=user.display_name,
+                               image_url=self._PROFILE_IMAGE_URL)
+        self.offline_channel = Channel(
+            url=f'https://www.twitch.tv/{offline_user.login}', name=offline_user.display_name,
+            image_url=self._PROFILE_IMAGE_URL)
         self.category = stream.game_name
 
         self.redirect_uri = ''

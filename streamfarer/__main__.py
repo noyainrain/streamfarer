@@ -230,7 +230,7 @@ Obtain CODE from the address bar.
         parsed_args.database_url = options['database_url']
     parsed_args.host = options['host']
     try:
-        parsed_args.port = options.getint('port')
+        parsed_args.port = int(options['port'])
     except ValueError:
         print('⚠️ Failed to load the config file (Bad port type)', file=sys.stderr)
         return 1

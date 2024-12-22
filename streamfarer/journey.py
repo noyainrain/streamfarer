@@ -220,12 +220,13 @@ class Journey(BaseModel): # type: ignore[misc]
                 rows = db.execute(
                     """
                     INSERT INTO stays (
-                        id, journey_id, channel_url, channel_name, category, start_time, end_time
+                        id, journey_id, channel_url, channel_name, channel_image_url, category,
+                        start_time, end_time
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *
                     """,
-                    (randstr(), self.id, stream.channel.url, stream.channel.name, stream.category,
-                     now, None))
+                    (randstr(), self.id, stream.channel.url, stream.channel.name,
+                     stream.channel.image_url, stream.category, now, None))
                 stay = Stay.model_validate(nested(dict(next(rows)), 'channel'))
         bot.dispatch_event(Event(type='journey-travel-on'))
         return stay

@@ -15,7 +15,7 @@ from http import HTTPStatus
 from logging import getLogger
 from types import TracebackType
 from typing import Annotated, ClassVar, Generic, Literal, ParamSpec, Self, TypeVar, cast
-from urllib.parse import quote, urljoin
+from urllib.parse import quote_plus, urljoin
 
 from pydantic import BaseModel, Discriminator, Tag, TypeAdapter, ValidationError, validate_call
 from tornado.websocket import WebSocketClientConnection, websocket_connect
@@ -49,10 +49,15 @@ class Channel(BaseModel): # type: ignore[misc]
     .. attribute:: name
 
        Channel name.
+
+    .. attribute:: image_url
+
+       URL of the channel image.
     """
 
     url: str
     name: Text
+    image_url: str
 
 class Stream(AbstractAsyncContextManager['Stream']):
     """Live stream.
@@ -308,7 +313,8 @@ class LocalService(Service[LocalStream]): # type: ignore[misc]
 
     @validate_call # type: ignore[misc]
     async def create_channel(self, name: Text) -> Channel:
-        channel = Channel(url=f'streamfarer:{quote(name)}', name=name)
+        path = quote_plus(name)
+        channel = Channel(url=f'streamfarer:{path}', name=name, image_url=f'streamfarer:{path}.png')
         self._channels.setdefault(channel.url, channel)
         future: Future[LocalService._Broadcast] = get_running_loop().create_future()
         self._broadcasts.setdefault(channel.url, future)
@@ -517,6 +523,7 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
     class _User(BaseModel): # type: ignore[misc]
         id: str
         display_name: str
+        profile_image_url: str
 
     class _Stream(BaseModel): # type: ignore[misc]
         game_name: str
@@ -572,8 +579,10 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
                 raise OSError(errno.EPROTO,
                               f"Unexpected notification type {notification.subscription.type}")
 
-        return TwitchStream(channel=Channel(url=channel_url, name=user.display_name),
-                            category=stream.game_name, service=self, _notifications=notifications)
+        return TwitchStream(
+            channel=Channel(url=channel_url, name=user.display_name,
+                            image_url=user.profile_image_url),
+            category=stream.game_name, service=self, _notifications=notifications)
 
     def _subscription(self, subscription_type: str, condition: dict[str, str],
                       session_id: str) -> dict[str, object]:

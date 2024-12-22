@@ -25,7 +25,7 @@ from .services import (AuthenticationError, LocalService, LocalServiceAdapter, S
                        StreamTimeoutError, Twitch, TwitchAdapter)
 from .util import Connection, add_column, randstr
 
-VERSION = '0.1.12'
+VERSION = '0.1.13'
 
 _P = ParamSpec('_P')
 _R_co = TypeVar('_R_co', covariant=True)
@@ -243,12 +243,13 @@ class Bot:
                 db.execute(
                     """
                     INSERT INTO stays (
-                        id, journey_id, channel_url, channel_name, category, start_time, end_time
+                        id, journey_id, channel_url, channel_name, channel_image_url, category,
+                        start_time, end_time
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (randstr(), journey.id, stream.channel.url, stream.channel.name,
-                     stream.category, start_time, None))
+                     stream.channel.image_url, stream.category, start_time, None))
                 return journey
 
     def get_services(self) -> list[Service[Stream]]:
@@ -307,6 +308,7 @@ class Bot:
                     journey_id REFERENCES journeys,
                     channel_url,
                     channel_name,
+                    channel_image_url,
                     category,
                     start_time,
                     end_time
@@ -359,3 +361,9 @@ class Bot:
 
             # Update Stay.category
             add_column(db, 'stays', 'category', '?')
+
+            # Update Channel.image_url
+            add_column(
+                db, 'stays', 'channel_image_url',
+                'https://static-cdn.jtvnw.net/user-default-pictures-uv/'
+                '998f01ae-def8-11e9-b95c-784f43822e80-profile_image-300x300.png')
