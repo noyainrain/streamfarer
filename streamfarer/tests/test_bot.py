@@ -9,6 +9,7 @@ from unittest import IsolatedAsyncioTestCase
 from streamfarer.bot import Bot
 from streamfarer.core import Event
 from streamfarer.journey import OngoingJourneyError
+from streamfarer.services import LocalService
 from streamfarer.util import cancel
 
 class TestCase(IsolatedAsyncioTestCase):
@@ -90,6 +91,10 @@ class BotTestCase(TestCase):
         await self.bot.start_journey(self.channel.url, 'Roaming')
         with self.assertRaises(OngoingJourneyError):
             await self.bot.start_journey(self.channel.url, 'Roaming')
+
+    def test_get_service_at(self) -> None:
+        service = self.bot.get_service_at(LocalService.url)
+        self.assertEqual(service, self.local)
 
     async def test_stream(self) -> None:
         stream = await self.bot.stream(self.channel.url)

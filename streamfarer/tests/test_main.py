@@ -50,4 +50,4 @@ class MainTest(TestCase):
     async def test_service(self) -> None:
         code, stdout = await self.main('service')
         self.assertEqual(code, 0)
-        self.assertIn('📺 Local livestreaming service', stdout)
+        self.assertIn(self.local.name, stdout)

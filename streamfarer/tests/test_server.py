@@ -16,5 +16,8 @@ class ServerTest(TestCase):
         await super().asyncTearDown()
 
     async def test_get_index(self) -> None:
+        await self.bot.start_journey(self.channel.url, 'Roaming')
         response = await AsyncHTTPClient().fetch(self.server.url)
-        self.assertIn('Streamfarer', response.body.decode())
+        body = response.body.decode()
+        self.assertIn('Roaming', body)
+        self.assertIn('Streamfarer', body)

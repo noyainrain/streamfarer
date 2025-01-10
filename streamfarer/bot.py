@@ -23,9 +23,9 @@ from .core import Event, Text
 from .journey import EndedJourneyError, Journey, OngoingJourneyError, PastJourneyError, Stay
 from .services import (AuthenticationError, LocalService, LocalServiceAdapter, Service, Stream,
                        StreamTimeoutError, Twitch, TwitchAdapter)
-from .util import Connection, add_column, randstr
+from .util import Connection, add_column, randstr, urlorigin
 
-VERSION = '0.1.13'
+VERSION = '0.1.14'
 
 _P = ParamSpec('_P')
 _R_co = TypeVar('_R_co', covariant=True)
@@ -51,6 +51,7 @@ class Bot:
     """
 
     _JOURNEY_END_GRACE_PERIOD = timedelta(minutes=5)
+    _SERVICE_TYPES_BY_URL = {LocalService.url: 'local', Twitch.url: 'twitch'}
 
     _AnyService = Annotated[Twitch | LocalService, Field(discriminator='type')]
     _ServiceModel: TypeAdapter[_AnyService] = TypeAdapter(_AnyService)
@@ -258,6 +259,22 @@ class Bot:
             return [self._ServiceModel.validate_python(dict(row)) # type: ignore[misc]
                     for row in db.execute('SELECT * FROM services ORDER BY type')]
 
+    def get_service(self, service_type: str) -> Service[Stream]:
+        """Get the connected livestreaming service of the given *service_type*."""
+        with self.transaction() as db:
+            rows = db.execute('SELECT * FROM services WHERE type = ?', (service_type, ))
+            try:
+                return Bot._ServiceModel.validate_python(dict(next(rows)))
+            except StopIteration:
+                raise KeyError(service_type) from None
+
+    def get_service_at(self, url: str) -> Service[Stream]:
+        """Get the connected livestreaming service at the given *url*."""
+        try:
+            return self.get_service(self._SERVICE_TYPES_BY_URL[url])
+        except KeyError:
+            raise KeyError(url) from None
+
     async def stream(self, channel_url: str, *, timeout: float | None = None) -> Stream:
         """Open the live stream at the given *channel_url*.
 
@@ -267,12 +284,8 @@ class Bot:
         raised. If there is a problem communicating with the livestreaming service, an
         :exc:`OSError` is raised.
         """
-        for service in self.get_services():
-            try:
-                return await service.stream(channel_url, timeout=timeout)
-            except LookupError:
-                pass
-        raise LookupError(channel_url)
+        service = self.get_service_at(urlorigin(channel_url))
+        return await service.stream(channel_url, timeout=timeout)
 
     def transaction(self) -> Connection[Row]:
         """Plumbing: Context manager to perform a transaction."""

@@ -10,13 +10,18 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from tornado.testing import AsyncHTTPTestCase, gen_test
 from tornado.web import Application, RequestHandler
 
-from streamfarer.util import WebAPI, add_column, cancel, nested, randstr
+from streamfarer.util import WebAPI, add_column, cancel, nested, randstr, urlorigin
 
 class RandstrTest(TestCase):
     def test(self) -> None:
         text = randstr()
         self.assertEqual(len(text), 16)
         self.assertLessEqual(set(text), set(ascii_lowercase))
+
+class UrloriginTest(TestCase):
+    def test(self) -> None:
+        origin = urlorigin('https://example.org/cats?age=7#a')
+        self.assertEqual(origin, 'https://example.org')
 
 class CancelTest(IsolatedAsyncioTestCase):
     async def test(self) -> None:

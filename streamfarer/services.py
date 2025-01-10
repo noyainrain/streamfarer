@@ -125,7 +125,18 @@ class Service(BaseModel, Generic[L_co]): # type: ignore[misc]
     .. attribute:: type
 
        Service type.
+
+    .. attribute:: url
+
+       Origin URL of the service.
+
+    .. attribute:: name
+
+       Service name.
     """
+
+    url: ClassVar[str]
+    name: ClassVar[str]
 
     type: str
 
@@ -276,6 +287,9 @@ class LocalService(Service[LocalStream]): # type: ignore[misc]
         category: Text
         streams: set[Queue[Stream.Event | Exception]]
 
+    url: ClassVar[str] = 'streamfarer:'
+    name: ClassVar[str] = 'Local Livestreaming Service'
+
     _channels: ClassVar[dict[str, Channel]] = {}
     _broadcasts: ClassVar[dict[str, Future[_Broadcast]]] = {}
 
@@ -353,7 +367,7 @@ class LocalService(Service[LocalStream]): # type: ignore[misc]
             events.put_nowait(Stream.RaidEvent(target_url=target.url))
 
     def __str__(self) -> str:
-        return '📺 Local livestreaming service'
+        return f'📺 {self.name}'
 
 class LocalServiceAdapter(ServiceAdapter[[], LocalService]):
     """Local livestreaming service adapter."""
@@ -472,7 +486,7 @@ class TwitchStream(Stream):
         match notification:
             case _TwitchChannelRaidPayload():
                 return Stream.RaidEvent(
-                    target_url=urljoin(Twitch.CHANNEL_BASE_URL,
+                    target_url=urljoin(self.service.url,
                                        notification.event.to_broadcaster_user_login))
             case _TwitchStreamOfflinePayload():
                 self._eof = True
@@ -486,16 +500,14 @@ class TwitchStream(Stream):
         await self._notifications.aclose() # type: ignore[misc]
 
 class Twitch(Service[TwitchStream]): # type: ignore[misc]
-    """Twitch connection.
-
-    .. attribute:: CHANNEL_BASE_URL
-
-       Channel base URL.
-    """
+    """Twitch connection."""
 
     # Work around Pylint missing docstrings from a generic parent (see
     # https://github.com/pylint-dev/pylint/issues/9766)
     # pylint: disable=missing-function-docstring
+
+    url: ClassVar['str'] = 'https://www.twitch.tv'
+    name: ClassVar['str'] = 'Twitch'
 
     type: Literal['twitch']
     """Web API URL."""
@@ -514,8 +526,6 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
     token: str
     """Refresh token."""
     refresh_token: str
-
-    CHANNEL_BASE_URL: ClassVar[str] = 'https://www.twitch.tv/'
 
     class _Page(BaseModel, Generic[_T]): # type: ignore[misc]
         data: list[_T]
@@ -708,7 +718,7 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
             raise
 
     async def _get_user(self, channel_url: str) -> Twitch._User:
-        login = channel_url.removeprefix(self.CHANNEL_BASE_URL)
+        login = channel_url.removeprefix(f'{self.url}/')
         if login == channel_url:
             raise LookupError(channel_url)
         users = Twitch._Page[Twitch._User].model_validate(
@@ -719,7 +729,7 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
             raise LookupError(channel_url) from None
 
     def __str__(self) -> str:
-        return f'📺 Twitch via application {self.client_id}'
+        return f'📺 {self.name} via application {self.client_id}'
 
 class TwitchAdapter(
     ServiceAdapter[[str, str, str, str, str | None, str | None, str | None, str | None], Twitch]

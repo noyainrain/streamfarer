@@ -70,6 +70,7 @@ class ServiceAdapaterTest(TestCase):
     async def test_connect(self) -> None:
         service = await self.bot.local.connect()
         self.assertEqual(self.bot.get_services(), [service]) # type: ignore[misc]
+        self.assertEqual(service, self.bot.get_service(service.type))
 
 class LocalStreamTest(TestCase, WithStreamTests):
     async def asyncSetUp(self) -> None:

@@ -11,7 +11,7 @@ from string import ascii_lowercase
 import sqlite3
 from sqlite3 import OperationalError
 from typing import Generic, Protocol, TypeVar
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
 
 from tornado.httpclient import AsyncHTTPClient, HTTPClientError, HTTPRequest, HTTPResponse
 from tornado.simple_httpclient import HTTPStreamClosedError, HTTPTimeoutError
@@ -35,6 +35,11 @@ def randstr(length: int = 16, *, characters: str = ascii_lowercase) -> str:
     # presumed number of entities n = 1000000 and the size of the character set c = 26. (see
     # https://en.wikipedia.org/wiki/Birthday_problem)
     return ''.join(random.choice(characters) for _ in range(length))
+
+def urlorigin(url: str) -> str:
+    """Get the origin of a *url*."""
+    components = urlsplit(url)
+    return urlunsplit((components.scheme, components.netloc, '', '', ''))
 
 async def cancel(task: Task[object]) -> None:
     """Cancel a *task*."""

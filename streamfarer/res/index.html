@@ -14,12 +14,12 @@
             <h1>{{ journey.title }}</h1>
             <p>
                 {% if journey.end_time %}
-                    Streamfarer was on a journey through Twitch for
+                    Streamfarer was on a journey through {{ service.name }} for
                     {{ format_duration(journey.duration) }}, from
                     {{ format_datetime(journey.start_time) }} until
                     {{ format_datetime(journey.end_time) }}.
                 {% else %}
-                    Streamfarer has been on a journey through Twitch for
+                    Streamfarer has been on a journey through {{ service.name }} for
                     {{ format_duration(journey.duration) }} now, since
                     {{ format_datetime(journey.start_time) }}.
                 {% end %}
@@ -53,7 +53,7 @@
 
         <hr />
         <footer>
-            <p>Streamfarer<p>
+            <p>Streamfarer (Beta)<p>
             <p>Live stream traveling bot and tiny art experiment. ⛵</p>
             <p>
                 Made live on
