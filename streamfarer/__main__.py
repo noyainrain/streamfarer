@@ -20,7 +20,7 @@ from textwrap import dedent
 from . import context
 from .bot import Bot, VERSION
 from .journey import OngoingJourneyError, PastJourneyError
-from .server import serve
+from .server import serve, server_url
 from .services import AuthenticationError, AuthorizationError
 from .util import text
 
@@ -29,6 +29,7 @@ class _Arguments:
     database_url: str
     host: str
     port: int
+    url: str
     channel_url: str
     title: str
     id: str
@@ -40,7 +41,7 @@ async def _run(args: _Arguments) -> int:
     logger = getLogger(__name__)
 
     try:
-        server = serve(host=args.host, port=args.port)
+        server = serve(host=args.host, port=args.port, url=args.url)
     except OSError as e:
         print(f'⚠️ Failed to start the server ({e})', file=sys.stderr)
         return 1
@@ -123,7 +124,7 @@ async def _service(_: _Arguments) -> int:
 async def _connect_twitch(args: _Arguments) -> int:
     try:
         await context.bot.get().twitch.connect(args.client_id, args.client_secret, args.code,
-                                               'http://localhost:8080/', None, None, None, None)
+                                               args.url, None, None, None, None)
     except AuthorizationError:
         print('⚠️ Failed to get authorization with CLIENT_ID, CLIENT_SECRET and CODE',
               file=sys.stderr)
@@ -198,7 +199,7 @@ Redirect URLs to URL. Obtain CLIENT_ID and CLIENT_SECRET.
 https://id.twitch.tv/oauth2/authorize?client_id=CLIENT_ID&redirect_uri=URL&response_type=code. \
 Obtain CODE from the address bar.
 
-        URL is http://localhost:8080/.
+        URL corresponds to the configuration option.
         """
     )
     twitch_parser = connect_subparsers.add_parser(
@@ -234,6 +235,7 @@ Obtain CODE from the address bar.
     except ValueError:
         print('⚠️ Failed to load the config file (Bad port type)', file=sys.stderr)
         return 1
+    parsed_args.url = options['url'] or server_url(parsed_args.host, parsed_args.port)
 
     logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s %(message)s', level=logging.INFO)
     getLogger('asyncio').setLevel(logging.WARNING)

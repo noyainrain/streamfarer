@@ -59,10 +59,15 @@ class Server:
         self._http.stop()
         self._res_directory.__exit__(None, None, None)
 
-def serve(*, host: str = '', port: int = 8080) -> Server:
+def server_url(host: str, port: int) -> str:
+    """Construct a web server URL from its *host* and *port*."""
+    host = host or 'localhost'
+    return f'http://{host}:{port}/'
+
+def serve(*, host: str = '', port: int = 8080, url: str | None = None) -> Server:
     """Serve a web UI for the active bot.
 
-    Incoming connections are listened for on *host* and *port*.
+    Incoming connections are listened for on the given *host* and *port*. *url* is the public URL.
 
     If there is a problem starting the server, an :exc:`OSError` is raised.
     """
@@ -70,10 +75,9 @@ def serve(*, host: str = '', port: int = 8080) -> Server:
     res_path = res_directory.__enter__()
 
     try:
-        url_host = host or 'localhost'
-        url = f'http://{url_host}:{port}/'
-        app = Application([('/', _Index)], compress_response=True, # type: ignore[misc]
-                          log_function=_log, template_path=res_path, url=url)
+        app = Application(
+            [('/', _Index)], compress_response=True, log_function=_log, # type: ignore[misc]
+            template_path=res_path, url=server_url(host, port) if url is None else url)
         http = app.listen(port, address=host, xheaders=True)
         return Server(http, res_directory)
     except:
