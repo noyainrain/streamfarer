@@ -13,10 +13,12 @@ from sqlite3 import OperationalError
 from typing import Generic, Protocol, TypeVar
 from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
 
+import tornado
 from tornado.httpclient import AsyncHTTPClient, HTTPClientError, HTTPRequest, HTTPResponse
 from tornado.simple_httpclient import HTTPStreamClosedError, HTTPTimeoutError
 
 T_co = TypeVar("T_co", covariant=True)
+M_co = TypeVar('M_co', bound=Mapping[str, object], covariant=True)
 
 RowFactory = Callable[[sqlite3.Cursor, tuple[object, ...]], T_co]
 
@@ -219,3 +221,21 @@ class Connection(sqlite3.Connection, Generic[T_co]):
                 parameters: SupportsLenAndGetItem | Mapping[str, object] = ()) -> Cursor[T_co]:
         # pylint: disable=missing-function-docstring
         return super().cursor(factory=Cursor).execute(sql, parameters)
+
+class Application(tornado.web.Application, Generic[M_co]):
+    """Web application with type annotations for settings."""
+
+    # __init__() cannot be annotated adequately, because Unpack does not support type variables yet
+    # (see https://github.com/python/typing/issues/1399)
+
+    settings: M_co # type: ignore[assignment]
+
+class RequestHandler(tornado.web.RequestHandler, Generic[M_co]):
+    """HTTP request handler with type annotations for settings."""
+
+    settings: M_co # type: ignore[assignment]
+
+class UIModule(tornado.web.UIModule, Generic[M_co]):
+    """UI module with type annotations for settings."""
+
+    handler: RequestHandler[M_co]

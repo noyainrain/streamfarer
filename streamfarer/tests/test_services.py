@@ -2,6 +2,7 @@
 
 from contextlib import AbstractContextManager
 from typing import Generic, Protocol, TypeVar
+from urllib.parse import urljoin
 
 from pydantic import BaseModel
 
@@ -166,6 +167,10 @@ class TwitchTest(TwitchTestCase, WithServiceTests):
         self.service = await self.bot.twitch.connect(
             self.client_id, self.client_secret, self.code, self.redirect_uri, self.api_url,
             self.oauth_url, self.eventsub_url, self.websocket_url)
+
+    def test_get_login(self) -> None:
+        login = self.service.get_login(urljoin(self.service.url, 'frank'))
+        self.assertEqual(login, 'frank')
 
 class TwitchAdapterTest(TwitchTestCase):
     async def test_authorize(self) -> None:

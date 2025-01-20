@@ -705,6 +705,13 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
         await Twitch.cli('event', 'trigger', '--transport=websocket', f'--from-user={user.id}',
                          f'--to-user={target.id}', 'raid')
 
+    def get_login(self, channel_url: str) -> str:
+        """Get the user login from a *channel_url*."""
+        login = channel_url.removeprefix(f'{self.url}/')
+        if login == channel_url or not login:
+            raise ValueError(f'Bad channel_url {channel_url}')
+        return login
+
     async def _call(self, method: str, endpoint: str, *, data: Mapping[str, object] | None = None,
                     query: Mapping[str, str] = {}) -> dict[str, object]:
         # pylint: disable=dangerous-default-value
@@ -718,9 +725,10 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
             raise
 
     async def _get_user(self, channel_url: str) -> Twitch._User:
-        login = channel_url.removeprefix(f'{self.url}/')
-        if login == channel_url:
-            raise LookupError(channel_url)
+        try:
+            login = self.get_login(channel_url)
+        except ValueError:
+            raise LookupError(channel_url) from None
         users = Twitch._Page[Twitch._User].model_validate(
             await self._call("GET", "users", query={'login': login}))
         try:

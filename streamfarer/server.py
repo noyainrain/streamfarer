@@ -5,16 +5,29 @@ from importlib import resources
 import logging
 from logging import getLogger
 from pathlib import Path
+from typing import TypedDict
+from urllib.parse import urlsplit
 
 from tornado.httpserver import HTTPServer
-from tornado.web import Application, RequestHandler
 
 from . import context
 from .bot import VERSION
 from .core import format_datetime, format_duration
-from .util import urlorigin
+from .services import Channel, Twitch
+from .util import Application, RequestHandler, UIModule, urlorigin
 
-class _Index(RequestHandler):
+class _Settings(TypedDict):
+    url: str
+
+class TwitchPlayer(UIModule[_Settings]):
+    """Twitch video player."""
+
+    def render(self, channel: Channel, service: Twitch) -> str:
+        html = self.render_string("twitchplayer.html", login=service.get_login(channel.url),
+                                  host=urlsplit(self.handler.settings['url']).hostname)
+        return html.decode()
+
+class _Index(RequestHandler[_Settings]):
     def get(self) -> None:
         # pylint: disable=missing-function-docstring
         bot = context.bot.get()
@@ -30,7 +43,7 @@ class _Index(RequestHandler):
             'index.html', journey=journey, stays=stays, service=service, version=VERSION,
             format_datetime=format_datetime, format_duration=format_duration)
 
-def _log(handler: RequestHandler) -> None:
+def _log(handler: RequestHandler[_Settings]) -> None:
     request = handler.request
     client: str | None = request.remote_ip
     status = handler.get_status()
@@ -49,10 +62,8 @@ class Server:
     def url(self) -> str:
         """Server URL."""
         assert isinstance(self._http.request_callback, Application) # type: ignore[misc]
-        settings: dict[str, object] = self._http.request_callback.settings
-        url = settings['url']
-        assert isinstance(url, str)
-        return url
+        app: Application[_Settings] = self._http.request_callback
+        return app.settings['url']
 
     def close(self) -> None:
         """Stop the server."""
@@ -75,9 +86,11 @@ def serve(*, host: str = '', port: int = 8080, url: str | None = None) -> Server
     res_path = res_directory.__enter__()
 
     try:
-        app = Application(
+        ui_modules = {TwitchPlayer.__name__: TwitchPlayer}
+        app: Application[_Settings] = Application(
             [('/', _Index)], compress_response=True, log_function=_log, # type: ignore[misc]
-            template_path=res_path, url=server_url(host, port) if url is None else url)
+            ui_modules=ui_modules, template_path=res_path,
+            url=server_url(host, port) if url is None else url)
         http = app.listen(port, address=host, xheaders=True)
         return Server(http, res_directory)
     except:

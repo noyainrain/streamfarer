@@ -2,7 +2,7 @@
 <html lang="en">
     <head>
         <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width" />
+        <meta name="viewport" content="initial-scale=1" />
 
         <title>Streamfarer</title>
         <meta name="description" content="Live stream traveling bot and tiny art experiment." />
@@ -24,6 +24,14 @@
                     {{ format_datetime(journey.start_time) }}.
                 {% end %}
             </p>
+
+            {% if not journey.end_time %}
+                {% if service.type == 'twitch' %}
+                    {% module TwitchPlayer(stays[0].channel, service) %}
+                {% end %}
+                <p><a href="https://discord.gg/YN6f6kKzRD" target="_blank">Join Journey Chat</a></p>
+            {% end %}
+
             <ul>
                 {% for stay in stays %}
                     <li>
