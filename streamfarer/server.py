@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TypedDict
 from urllib.parse import urlsplit
 
+from pydantic import TypeAdapter
 from tornado.httpserver import HTTPServer
 
 from . import context
@@ -16,8 +17,11 @@ from .core import format_datetime, format_duration
 from .services import Channel, Twitch
 from .util import Application, RequestHandler, UIModule, urlorigin
 
+_FontsModel = TypeAdapter(dict[str, str])
+
 class _Settings(TypedDict):
     url: str
+    fonts: dict[str, str]
 
 class TwitchPlayer(UIModule[_Settings]):
     """Twitch video player."""
@@ -39,9 +43,12 @@ class _Index(RequestHandler[_Settings]):
             journey = None
             stays = None
             service = None
+
+        self.set_header('Cache-Control', 'no-cache')
         self.render(
-            'index.html', journey=journey, stays=stays, service=service, version=VERSION,
-            format_datetime=format_datetime, format_duration=format_duration)
+            'index.html', journey=journey, stays=stays, service=service,
+            fonts=self.settings['fonts'], version=VERSION, format_datetime=format_datetime,
+            format_duration=format_duration)
 
 def _log(handler: RequestHandler[_Settings]) -> None:
     request = handler.request
@@ -82,15 +89,18 @@ def serve(*, host: str = '', port: int = 8080, url: str | None = None) -> Server
 
     If there is a problem starting the server, an :exc:`OSError` is raised.
     """
-    res_directory = resources.as_file(resources.files(f'{__package__}.res'))
-    res_path = res_directory.__enter__()
+    res = resources.files(f'{__package__}.res')
+    fonts = _FontsModel.validate_json((res / 'static/vendor/unicode.json').read_text())
 
+    res_directory = resources.as_file(res)
+    res_path = res_directory.__enter__()
     try:
         ui_modules = {TwitchPlayer.__name__: TwitchPlayer}
         app: Application[_Settings] = Application(
             [('/', _Index)], compress_response=True, log_function=_log, # type: ignore[misc]
-            ui_modules=ui_modules, template_path=res_path,
-            url=server_url(host, port) if url is None else url)
+            ui_modules=ui_modules, template_path=res_path, static_path=res_path / 'static',
+            url=server_url(host, port) if url is None else url, fonts=fonts)
+
         http = app.listen(port, address=host, xheaders=True)
         return Server(http, res_directory)
     except:

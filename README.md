@@ -7,6 +7,7 @@ Live stream traveling bot and tiny art experiment. ⛵
 The following software must be installed on your system:
 
 * Python >= 3.11
+* Node.js >= 18.19
 
 Streamfarer should work on any [POSIX](https://en.wikipedia.org/wiki/POSIX) system.
 

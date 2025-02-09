@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="24"
+   height="16"
+   viewBox="0 0 24 16.000001"
+   version="1.1"
+   id="svg11081"
+   inkscape:version="1.2.2 (b0a8486541, 2022-12-01)"
+   sodipodi:docname="waves.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview11083"
+     pagecolor="#000000"
+     bordercolor="#666666"
+     borderopacity="1.0"
+     inkscape:showpageshadow="false"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="px"
+     showgrid="false"
+     showborder="false"
+     inkscape:zoom="1"
+     inkscape:cx="33"
+     inkscape:cy="23.5"
+     inkscape:window-width="1920"
+     inkscape:window-height="1011"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1"
+     borderlayer="false"
+     showguides="false">
+    <inkscape:grid
+       type="xygrid"
+       id="grid11202"
+       empspacing="8" />
+  </sodipodi:namedview>
+  <defs
+     id="defs11078">
+    <mask
+       maskUnits="userSpaceOnUse"
+       id="mask25578">
+      <rect
+         style="fill:#ffffff;stroke:none;stroke-width:1;stroke-dasharray:none;stroke-opacity:1;stop-color:#000000"
+         id="rect25580"
+         width="24"
+         height="16"
+         x="0"
+         y="0"
+         inkscape:label="mask" />
+    </mask>
+  </defs>
+  <g
+     inkscape:label="waves"
+     inkscape:groupmode="layer"
+     id="layer1"
+     mask="url(#mask25578)"
+     sodipodi:insensitive="true">
+    <circle
+       style="fill:#5299e0;fill-opacity:1;stroke:none;stroke-width:1;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;stop-color:#000000"
+       id="path1589-7-5"
+       cx="0"
+       cy="16"
+       r="16"
+       inkscape:label="wave" />
+    <circle
+       style="fill:#5299e0;fill-opacity:1;stroke:none;stroke-width:1;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;stop-color:#000000"
+       id="path1589-7-5-6"
+       cx="24"
+       cy="16"
+       r="16"
+       inkscape:label="wave" />
+    <circle
+       style="fill:#1f66ad;fill-opacity:1;stroke:none;stroke-width:1;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;stop-color:#000000"
+       id="path1589"
+       cx="12"
+       cy="24"
+       r="16"
+       inkscape:label="wave" />
+  </g>
+</svg>

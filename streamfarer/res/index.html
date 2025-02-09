@@ -7,71 +7,120 @@
         <title>Streamfarer</title>
         <meta name="description" content="Live stream traveling bot and tiny art experiment." />
         <meta name="keywords" content="bot, live stream, journey, art, Twitch" />
+        <!--
+            Sizes as suggested by
+            https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Making_PWAs_installable
+        -->
+        <link rel="icon" sizes="16x16" href="{{ static_url('images/icon-small.png') }}" />
+        <link rel="icon" sizes="512x512" href="{{ static_url('images/icon.png') }}" />
+
+        <style>
+            @import "{{ static_url('main.css') }}";
+
+            {% for name, range in fonts.items() %}
+                @font-face {
+                    font-family: "Noto Serif Variable";
+                    font-weight: 100 900;
+                    unicode-range: {{ range }};
+                    src: url("{{ static_url(f'vendor/noto-serif-{name}-wght-normal.woff2') }}");
+                }
+            {% end %}
+
+            nav::after {
+                background-image: url("{{ static_url('images/waves.svg') }}");
+            }
+        </style>
     </head>
 
     <body>
-        {% if journey %}
-            <h1>{{ journey.title }}</h1>
-            <p>
-                {% if journey.end_time %}
-                    Streamfarer was on a journey through {{ service.name }} for
-                    {{ format_duration(journey.duration) }}, from
-                    {{ format_datetime(journey.start_time) }} until
-                    {{ format_datetime(journey.end_time) }}.
+        <main>
+            <div>
+                {% if journey %}
+                    <h1>{{ journey.title }}</h1>
+                    <p>
+                        {% if journey.end_time %}
+                            Streamfarer was on a journey through {{ service.name }} for
+                            {{ format_duration(journey.duration) }}, from
+                            {{ format_datetime(journey.start_time) }} until
+                            {{ format_datetime(journey.end_time) }}.
+                        {% else %}
+                            Streamfarer has been on a journey through {{ service.name }} for
+                            {{ format_duration(journey.duration) }} now, since
+                            {{ format_datetime(journey.start_time) }}.
+                        {% end %}
+                    </p>
+
+                    {% if not journey.end_time %}
+                        {% if service.type == 'twitch' %}
+                            {% module TwitchPlayer(stays[0].channel, service) %}
+                        {% end %}
+                        <a class="block" href="https://discord.gg/YN6f6kKzRD" target="_blank">
+                            Join Journey Chat
+                        </a>
+                    {% end %}
+
+                    <ul class="stays">
+                        {% for stay in stays %}
+                            <li class="stay">
+                                <div class="stay-path">
+                                    <a href="{{ stay.channel.url }}" target="_blank" tabindex="-1">
+                                        <img src="{{ stay.channel.image_url }}" alt="" />
+                                    </a>
+                                    <div></div>
+                                </div>
+                                <div class="stay-label">
+                                    <a href="{{ stay.channel.url }}" target="_blank">
+                                        <h2>{{ stay.channel.name }}</h2>
+                                    </a>
+                                    <p>
+                                        {% if stay.end_time %}
+                                            From {{ format_datetime(stay.start_time) }} until
+                                            {{ format_datetime(stay.end_time) }} for
+                                            {{ format_duration(stay.duration) }}
+                                        {% else %}
+                                            Since {{ format_datetime(stay.start_time) }} for
+                                            {{ format_duration(stay.duration) }}
+                                        {% end %}
+                                    </p>
+                                    <p>{{ stay.category }}</p>
+                                </div>
+                            </li>
+                        {% end %}
+                    </ul>
                 {% else %}
-                    Streamfarer has been on a journey through {{ service.name }} for
-                    {{ format_duration(journey.duration) }} now, since
-                    {{ format_datetime(journey.start_time) }}.
+                    <p class="no-journey">In all beginnings dwells a magic force ✨</p>
                 {% end %}
-            </p>
+            </div>
+        </main>
 
-            {% if not journey.end_time %}
-                {% if service.type == 'twitch' %}
-                    {% module TwitchPlayer(stays[0].channel, service) %}
-                {% end %}
-                <p><a href="https://discord.gg/YN6f6kKzRD" target="_blank">Join Journey Chat</a></p>
-            {% end %}
-
-            <ul>
-                {% for stay in stays %}
-                    <li>
-                        <h2>
-                            <a href="{{ stay.channel.url }}" target="_blank">
-                                <img src="{{ stay.channel.image_url }}" alt="" height="24" />
-                                {{ stay.channel.name }}
-                            </a>
-                        </h2>
-                        <p>
-                            {% if stay.end_time %}
-                                From {{ format_datetime(stay.start_time) }} until
-                                {{ format_datetime(stay.end_time) }} for
-                                {{ format_duration(stay.duration) }}
-                            {% else %}
-                                Since {{ format_datetime(stay.start_time) }} for
-                                {{ format_duration(stay.duration) }}
-                            {% end %}
-                        </p>
-                        <p>{{ stay.category }}</p>
-                    </li>
-                {% end %}
-            </ul>
-        {% else %}
-            <p>In all beginnings dwells a magic force ✨</p>
-        {% end %}
-
-        <hr />
+        <nav>
+            <div>
+                <img src="{{ static_url('images/boat.svg') }}" alt="" />
+                <a href="/"><h1>Streamfarer <small>Beta</small></h1></a>
+            </div>
+        </nav>
         <footer>
-            <p>Streamfarer (Beta)<p>
-            <p>Live stream traveling bot and tiny art experiment. ⛵</p>
-            <p>
-                Made live on
-                <a href="https://www.twitch.tv/noyainrain" target="_blank">twitch.tv/noyainrain</a>
-                · Powered by
-                <a href="https://github.com/noyainrain/streamfarer" target="_blank">
-                    Streamfarer {{ version }}
-                </a>
-                · <a href="https://discord.gg/pTn3TUUNVw" target="_blank">Community</a>
-            </p>
+            <p>Live stream traveling bot and tiny art experiment.</p>
+            <ul>
+                <li>
+                    <a class="block" href="https://www.twitch.tv/noyainrain" target="_blank">
+                        Made live on twitch.tv/noyainrain
+                    </a>
+                </li>
+                <li>
+                    <a
+                        class="block" href="https://github.com/noyainrain/streamfarer"
+                        target="_blank"
+                    >
+                        Powered by Streamfarer {{ version }}
+                    </a>
+                </li>
+                <li>
+                    <a class="block" href="https://discord.gg/pTn3TUUNVw" target="_blank">
+                        Community
+                    </a>
+                </li>
+            </ul>
         </footer>
     </body>
 </html>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+<svg width="32" height="32" version="1.1" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+ <g fill="#a8ccf0">
+  <path d="m27 19a11 11 0 0 1-5.5 9.5263 11 11 0 0 1-11-1e-6 11 11 0 0 1-5.5-9.5263h11z" stop-color="#000000" style="font-variation-settings:normal"/>
+  <path transform="rotate(90)" d="m19-20a8.5 8.5 0 0 1-4.25 7.3612 8.5 8.5 0 0 1-8.5 0 8.5 8.5 0 0 1-4.25-7.3612h8.5z" stop-color="#000000" style="font-variation-settings:normal"/>
+ </g>
+</svg>

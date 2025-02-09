@@ -1,6 +1,13 @@
-<div>
-    <iframe
-        src="https://player.twitch.tv/?channel={{ login }}&parent={{ host }}" allow="fullscreen"
-        width="640" height="360"
-    ></iframe>
-</div>
+<style>
+    .twitch-player {
+        display: block;
+        aspect-ratio: 16 / 9;
+        width: 100%;
+        border: unset;
+    }
+</style>
+
+<iframe
+    class="twitch-player" src="https://player.twitch.tv/?channel={{ login }}&parent={{ host }}"
+    allow="fullscreen"
+></iframe>

@@ -3,6 +3,8 @@ PYTHONFLAGS=-W error
 PIP=pip3
 PIPFLAGS=--upgrade
 PYLINTFLAGS=
+NPM=npm
+NPMFLAGS=--no-package-lock
 
 .PHONY: test
 test:
@@ -22,6 +24,7 @@ check: type test lint
 .PHONY: dependencies
 dependencies:
 	$(PIP) install $(PIPFLAGS) --requirement=requirements.txt
+	$(NPM) update $(NPMFLAGS)
 
 .PHONY: dependencies-dev
 dependencies-dev:
@@ -29,4 +32,4 @@ dependencies-dev:
 
 .PHONY: clean
 clean:
-	rm --force --recursive $$(find -name __pycache__) .mypy_cache
+	rm -rf $$(find -name __pycache__) .mypy_cache streamfarer/res/static/vendor node_modules

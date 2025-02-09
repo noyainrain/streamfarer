@@ -1,0 +1,11 @@
+{
+    "scripts": {
+        "dependencies": "mkdir -p streamfarer/res/static/vendor && cp $npm_package_config_vendored streamfarer/res/static/vendor/"
+    },
+    "config": {
+        "vendored": "node_modules/@fontsource-variable/noto-serif/files/noto-serif-*-wght-normal.woff2 node_modules/@fontsource-variable/noto-serif/unicode.json"
+    },
+    "dependencies": {
+        "@fontsource-variable/noto-serif": "^5.1"
+    }
+}
