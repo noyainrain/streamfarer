@@ -1,9 +1,14 @@
 [tool.mypy]
-files = "streamfarer"
+files = ["streamfarer"]
 strict = true
 disallow_any_expr = true
 disallow_any_decorated = true
 disallow_any_explicit = true
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_typed = true
+init_forbid_extra = true
 
 [tool.pylint.main]
 disable = [

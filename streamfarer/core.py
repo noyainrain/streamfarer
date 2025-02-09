@@ -22,7 +22,7 @@ def format_duration(duration: timedelta) -> str:
     minutes = duration // timedelta(minutes=1)
     return ' '.join(filter(None, (f'{hours} h' if hours else None, f'{minutes} min')))
 
-class Event(BaseModel): # type: ignore[misc]
+class Event(BaseModel):
     """Bot event.
 
     .. attribute:: type

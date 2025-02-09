@@ -22,7 +22,7 @@ class EndedJourneyError(Exception):
 class PastJourneyError(Exception):
     """Raised when an action cannot be performed because the journey is not the latest one."""
 
-class Stay(BaseModel): # type: ignore[misc]
+class Stay(BaseModel):
     """Stay at a live stream on a journey.
 
     .. attribute:: id
@@ -66,7 +66,7 @@ class Stay(BaseModel): # type: ignore[misc]
         """Get the related journey."""
         return context.bot.get().get_journey(self.journey_id)
 
-class Journey(BaseModel): # type: ignore[misc]
+class Journey(BaseModel):
     """Journey through live streams.
 
     .. attribute:: id

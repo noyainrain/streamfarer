@@ -26,7 +26,6 @@ from .util import WebAPI
 
 P = ParamSpec('P')
 S = TypeVar('S', bound='Service[Stream]')
-L_co = TypeVar('L_co', bound='Stream', covariant=True)
 
 _T = TypeVar('_T')
 
@@ -39,7 +38,7 @@ class AuthorizationError(Exception):
 class StreamTimeoutError(Exception):
     """Raised when awaiting a channel to come online times out."""
 
-class Channel(BaseModel): # type: ignore[misc]
+class Channel(BaseModel):
     """Live stream channel.
 
     .. attribute:: url
@@ -82,10 +81,10 @@ class Stream(AbstractAsyncContextManager['Stream']):
     category: Text
     service: Service[Stream]
 
-    class Event(BaseModel): # type: ignore[misc]
+    class Event(BaseModel):
         """Live stream event."""
 
-    class RaidEvent(Event): # type: ignore[misc]
+    class RaidEvent(Event):
         """Dispatched when the stream raids another.
 
         .. attribute:: target_url
@@ -116,7 +115,10 @@ class Stream(AbstractAsyncContextManager['Stream']):
     ) -> None:
         await self.aclose()
 
-class Service(BaseModel, Generic[L_co]): # type: ignore[misc]
+# Work around the Pydantic mypy plugin failing for type variables defined before their bound class
+L_co = TypeVar('L_co', bound=Stream, covariant=True)
+
+class Service(BaseModel, Generic[L_co]):
     """Connected livestreaming service.
 
     Any operation may raise an :exc:`AuthenticationError` if authentication fails or an
@@ -275,7 +277,7 @@ class LocalStream(Stream):
     async def aclose(self) -> None:
         self._close()
 
-class LocalService(Service[LocalStream]): # type: ignore[misc]
+class LocalService(Service[LocalStream]):
     """Local livestreaming service."""
 
     # Work around Pylint missing docstrings from a generic parent (see
@@ -375,39 +377,39 @@ class LocalServiceAdapter(ServiceAdapter[[], LocalService]):
     async def authorize(self) -> LocalService:
         return LocalService(type='local')
 
-class _TwitchToken(BaseModel): # type: ignore[misc]
+class _TwitchToken(BaseModel):
     access_token: str
     refresh_token: str
 
-class _TwitchMessage(BaseModel): # type: ignore[misc]
-    class _Metadata(BaseModel): # type: ignore[misc]
+class _TwitchMessage(BaseModel):
+    class _Metadata(BaseModel):
         message_type: str
 
     metadata: _Metadata
 
-class _TwitchSessionPayload(BaseModel): # type: ignore[misc]
-    class _Session(BaseModel): # type: ignore[misc]
+class _TwitchSessionPayload(BaseModel):
+    class _Session(BaseModel):
         id: str
         keepalive_timeout_seconds: int
 
     session: _Session
 
-class _TwitchNotificationPayload(BaseModel): # type: ignore[misc]
-    class _Subscription(BaseModel): # type: ignore[misc]
+class _TwitchNotificationPayload(BaseModel):
+    class _Subscription(BaseModel):
         type: str
 
     subscription: _Subscription
 
-class _TwitchChannelRaidPayload(_TwitchNotificationPayload): # type: ignore[misc]
-    class _Event(BaseModel): # type: ignore[misc]
+class _TwitchChannelRaidPayload(_TwitchNotificationPayload):
+    class _Event(BaseModel):
         to_broadcaster_user_login: str
 
     event: _Event
 
-class _TwitchStreamOnlinePayload(_TwitchNotificationPayload): # type: ignore[misc]
+class _TwitchStreamOnlinePayload(_TwitchNotificationPayload):
     pass
 
-class _TwitchStreamOfflinePayload(_TwitchNotificationPayload): # type: ignore[misc]
+class _TwitchStreamOfflinePayload(_TwitchNotificationPayload):
     pass
 
 def _twitch_subscription_type(data: dict[str, object]) -> str:
@@ -422,16 +424,16 @@ _AnyTwitchNotificationPayload = Annotated[
     Discriminator(_twitch_subscription_type)
 ]
 
-class _TwitchWelcomeMessage(_TwitchMessage): # type: ignore[misc]
+class _TwitchWelcomeMessage(_TwitchMessage):
     payload: _TwitchSessionPayload
 
-class _TwitchReconnectMessage(_TwitchMessage): # type: ignore[misc]
+class _TwitchReconnectMessage(_TwitchMessage):
     payload: _TwitchSessionPayload
 
-class _TwitchKeepaliveMessage(_TwitchMessage): # type: ignore[misc]
+class _TwitchKeepaliveMessage(_TwitchMessage):
     pass
 
-class _TwitchNotificationMessage(_TwitchMessage): # type: ignore[misc]
+class _TwitchNotificationMessage(_TwitchMessage):
     payload: _AnyTwitchNotificationPayload
 
 def _twitch_message_type(data: dict[str, object]) -> str:
@@ -499,7 +501,7 @@ class TwitchStream(Stream):
     async def aclose(self) -> None:
         await self._notifications.aclose() # type: ignore[misc]
 
-class Twitch(Service[TwitchStream]): # type: ignore[misc]
+class Twitch(Service[TwitchStream]):
     """Twitch connection."""
 
     # Work around Pylint missing docstrings from a generic parent (see
@@ -527,15 +529,15 @@ class Twitch(Service[TwitchStream]): # type: ignore[misc]
     """Refresh token."""
     refresh_token: str
 
-    class _Page(BaseModel, Generic[_T]): # type: ignore[misc]
+    class _Page(BaseModel, Generic[_T]):
         data: list[_T]
 
-    class _User(BaseModel): # type: ignore[misc]
+    class _User(BaseModel):
         id: str
         display_name: str
         profile_image_url: str
 
-    class _Stream(BaseModel): # type: ignore[misc]
+    class _Stream(BaseModel):
         game_name: str
 
     @staticmethod

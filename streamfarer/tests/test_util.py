@@ -73,7 +73,7 @@ class WebAPITest(AsyncHTTPTestCase):
         return Application([(r'/api/echo(?:/(\d{3}))?$', Echo)]) # type: ignore[misc]
 
     @gen_test # type: ignore[misc]
-    async def test_call(self) -> None:
+    async def test_call(self) -> None: # type: ignore[misc]
         api = WebAPI(self.get_url('/api/'), query={'token': 'secret'},
                      headers={'Authorization': 'Bearer: secret'})
         echo = await api.call('POST', 'echo', data={'age': 7}, query={'name': 'Frank'})
@@ -86,7 +86,7 @@ class WebAPITest(AsyncHTTPTestCase):
         self.assertEqual(headers.get('Authorization'), 'Bearer: secret')
 
     @gen_test # type: ignore[misc]
-    async def test_call_error(self) -> None:
+    async def test_call_error(self) -> None: # type: ignore[misc]
         api = WebAPI(self.get_url('/api/'))
         with self.assertRaises(WebAPI.Error) as e:
             await api.call('POST', 'echo/400', data={'message': 'Meow!'})
@@ -95,7 +95,7 @@ class WebAPITest(AsyncHTTPTestCase):
         self.assertEqual(e.exception.status, 400)
 
     @gen_test # type: ignore[misc]
-    async def test_call_communication_problem(self) -> None:
+    async def test_call_communication_problem(self) -> None: # type: ignore[misc]
         api = WebAPI('https://example.invalid/')
         with self.assertRaises(OSError):
             await api.call('GET', 'echo')

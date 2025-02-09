@@ -93,19 +93,19 @@ class TwitchTestCase(TestCase):
     _PROFILE_IMAGE_URL = ('https://static-cdn.jtvnw.net/jtv_user_pictures/'
                           '8a6381c7-d0c0-4576-b179-38bd5ce1d6af-profile_image-300x300.png')
 
-    class _Page(BaseModel, Generic[T]): # type: ignore[misc]
+    class _Page(BaseModel, Generic[T]):
         data: list[T]
 
-    class _Client(BaseModel): # type: ignore[misc]
+    class _Client(BaseModel):
         ID: str
         Secret: str
 
-    class _User(BaseModel): # type: ignore[misc]
+    class _User(BaseModel):
         id: str
         login: str
         display_name: str
 
-    class _Stream(BaseModel): # type: ignore[misc]
+    class _Stream(BaseModel):
         user_id: str
         game_name: str
 
