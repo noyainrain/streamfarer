@@ -25,7 +25,7 @@ from .services import (AuthenticationError, LocalService, LocalServiceAdapter, S
                        StreamTimeoutError, Twitch, TwitchAdapter)
 from .util import Connection, add_column, randstr, urlorigin
 
-VERSION = '0.2.0'
+VERSION = '0.2.1'
 
 _P = ParamSpec('_P')
 _R_co = TypeVar('_R_co', covariant=True)

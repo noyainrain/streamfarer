@@ -6,7 +6,7 @@ import asyncio
 from asyncio import (Future, InvalidStateError, Queue, create_subprocess_exec, gather,
                      get_running_loop, shield)
 from asyncio.subprocess import Process, DEVNULL, PIPE
-from collections.abc import AsyncGenerator, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 import errno
@@ -14,7 +14,8 @@ from functools import partial
 from http import HTTPStatus
 from logging import getLogger
 from types import TracebackType
-from typing import Annotated, ClassVar, Generic, Literal, ParamSpec, Self, TypeVar, cast
+from typing import (Annotated, ClassVar, Concatenate, Generic, Literal, ParamSpec, Self, TypeVar,
+                    cast)
 from urllib.parse import quote_plus, urljoin
 
 from pydantic import BaseModel, Discriminator, Tag, TypeAdapter, ValidationError, validate_call
@@ -25,6 +26,7 @@ from .core import Text
 from .util import WebAPI
 
 P = ParamSpec('P')
+R_co = TypeVar('R_co', covariant=True)
 S = TypeVar('S', bound='Service[Stream]')
 
 _T = TypeVar('_T')
@@ -57,6 +59,25 @@ class Channel(BaseModel):
     url: str
     name: Text
     image_url: str
+
+def authenticated(
+    func: Callable[Concatenate[S, P], Awaitable[R_co]]
+) -> Callable[Concatenate[S, P], Coroutine[None, None, R_co]]:
+    """Decorator for a service operation that requires authentication.
+
+    If an :exc:`AuthenticationError` is raised, the service is reconnected.
+    """
+    async def wrapper(self: S, /, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        while True:
+            try:
+                return await func(self, *args, **kwargs)
+            except AuthenticationError as e:
+                try:
+                    await self.reconnect()
+                    getLogger(__name__).info('Reconnected the livestreaming service')
+                except AuthorizationError:
+                    raise e from None
+    return wrapper
 
 class Stream(AbstractAsyncContextManager['Stream']):
     """Live stream.
@@ -142,25 +163,8 @@ class Service(BaseModel, Generic[L_co]):
 
     type: str
 
+    @authenticated
     async def stream(self, channel_url: str, *, timeout: float | None = None) -> L_co:
-        """Open the live stream at the given *channel_url*.
-
-        Optionally, the channel is awaited to come online with a *timeout* in seconds.
-
-        If required, the service is automatically reconnected.
-        """
-        service = self
-        while True:
-            try:
-                return await service.open_stream(channel_url, timeout)
-            except AuthenticationError as e:
-                try:
-                    service = await self.reconnect()
-                    getLogger(__name__).info('Reconnected the livestreaming service')
-                except AuthorizationError:
-                    raise e from None
-
-    async def open_stream(self, channel_url: str, timeout: float | None) -> L_co:
         """Open the live stream at the given *channel_url*.
 
         Optionally, the channel is awaited to come online with a *timeout* in seconds.
@@ -297,7 +301,8 @@ class LocalService(Service[LocalStream]):
 
     type: Literal['local']
 
-    async def open_stream(self, channel_url: str, timeout: float | None) -> LocalStream:
+    @authenticated
+    async def stream(self, channel_url: str, *, timeout: float | None = None) -> LocalStream:
         channel = await self.get_channel(channel_url)
         future = self._broadcasts[channel_url]
         try:
@@ -567,7 +572,8 @@ class Twitch(Service[TwitchStream]):
         if process.returncode != 0:
             raise OSError(errno.EINVAL, f'Error {process.returncode}')
 
-    async def open_stream(self, channel_url: str, timeout: float | None = None) -> TwitchStream:
+    @authenticated
+    async def stream(self, channel_url: str, *, timeout: float | None = None) -> TwitchStream:
         user = await self._get_user(channel_url)
         notifications = await self._notifications(user)
 
@@ -620,6 +626,9 @@ class Twitch(Service[TwitchStream]):
 
     async def _notifications(self, user: _User) -> AsyncGenerator[_TwitchNotificationPayload]:
         async def generator() -> AsyncGenerator[_TwitchNotificationPayload | None]:
+            service = context.bot.get().get_service(self.type)
+            assert isinstance(service, Twitch)
+
             websocket = await websocket_connect(self.websocket_url)
             try:
                 message = await self._read_message(websocket)
@@ -632,7 +641,10 @@ class Twitch(Service[TwitchStream]):
 
                 eventsub = WebAPI(
                     self.eventsub_url,
-                    headers={'Authorization': f'Bearer {self.token}', 'Client-Id': self.client_id})
+                    headers={
+                        'Authorization': f'Bearer {service.token}',
+                        'Client-Id': self.client_id
+                    })
                 subscriptions = [
                     self._subscription('channel.raid', {'from_broadcaster_user_id': user.id},
                                        session.id),
@@ -682,10 +694,12 @@ class Twitch(Service[TwitchStream]):
         return cast(AsyncGenerator[_TwitchNotificationPayload], notifications)
 
     async def reauthorize(self) -> Self:
+        service = context.bot.get().get_service(self.type)
+        assert isinstance(service, Twitch)
         token = await _post_twitch_token(
             WebAPI(self.oauth_url), 'token', client_id=self.client_id,
             client_secret=self.client_secret, grant_type='refresh_token',
-            refresh_token=self.refresh_token)
+            refresh_token=service.refresh_token)
         return self.copy(
             update={ # type: ignore[misc]
                 'token': token.access_token,
@@ -717,8 +731,11 @@ class Twitch(Service[TwitchStream]):
     async def _call(self, method: str, endpoint: str, *, data: Mapping[str, object] | None = None,
                     query: Mapping[str, str] = {}) -> dict[str, object]:
         # pylint: disable=dangerous-default-value
-        api = WebAPI(self.api_url,
-                     headers={'Authorization': f'Bearer {self.token}', 'Client-Id': self.client_id})
+        service = context.bot.get().get_service(self.type)
+        assert isinstance(service, Twitch)
+        api = WebAPI(
+            self.api_url,
+            headers={'Authorization': f'Bearer {service.token}', 'Client-Id': self.client_id})
         try:
             return await api.call(method, endpoint, data=data, query=query)
         except WebAPI.Error as e:
