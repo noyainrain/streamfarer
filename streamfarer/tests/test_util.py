@@ -1,6 +1,7 @@
 # pylint: disable=missing-docstring
 
-from asyncio import create_task, sleep
+from asyncio import Queue, create_task, sleep
+from collections.abc import AsyncGenerator
 import json
 import logging
 import sqlite3
@@ -10,7 +11,7 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from tornado.testing import AsyncHTTPTestCase, gen_test
 from tornado.web import Application, RequestHandler
 
-from streamfarer.util import WebAPI, add_column, cancel, nested, randstr, urlorigin
+from streamfarer.util import WebAPI, add_column, amerge, cancel, nested, randstr, urlorigin
 
 class RandstrTest(TestCase):
     def test(self) -> None:
@@ -28,6 +29,56 @@ class CancelTest(IsolatedAsyncioTestCase):
         task = create_task(sleep(1))
         await cancel(task)
         self.assertTrue(task.cancelled())
+
+class AmergeTest(IsolatedAsyncioTestCase):
+    @staticmethod
+    async def queue_aiter(queue: Queue[str | None]) -> AsyncGenerator[str]:
+        while True:
+            item = await queue.get()
+            queue.task_done()
+            if item is None:
+                return
+            yield item
+
+    @staticmethod
+    async def infinity() -> AsyncGenerator[None]:
+        while True:
+            yield
+
+    @staticmethod
+    async def tick() -> None:
+        # Wait for amerge() to continue (one loop iteration for anext() and two for wait())
+        for _ in range(3):
+            await sleep(0)
+
+    async def test_for(self) -> None:
+        letters: Queue[str | None] = Queue()
+        digits: Queue[str | None] = Queue()
+
+        async def produce() -> None:
+            letters.put_nowait('a')
+            await self.tick()
+            digits.put_nowait('1')
+            await self.tick()
+            letters.put_nowait('b')
+            await self.tick()
+            digits.put_nowait(None)
+            await self.tick()
+            letters.put_nowait(None)
+        create_task(produce())
+        generator = amerge(self.queue_aiter(letters), self.queue_aiter(digits))
+
+        items = [item async for item in generator]
+        self.assertEqual(items, ['a', '1', 'b']) # type: ignore[misc]
+
+    async def test_aclose(self) -> None:
+        infinity = self.infinity()
+        generator = amerge(infinity)
+        await anext(generator) # type: ignore[misc]
+
+        await generator.aclose() # type: ignore[misc]
+        with self.assertRaises(StopAsyncIteration):
+            await anext(infinity) # type: ignore[misc]
 
 class NestedTest(TestCase):
     def test(self) -> None:

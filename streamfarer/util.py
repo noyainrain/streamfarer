@@ -1,8 +1,8 @@
 """Various utilities."""
 
-from asyncio import CancelledError, Task
+from asyncio import CancelledError, FIRST_COMPLETED, Task, create_task, gather, wait
 from argparse import ArgumentTypeError
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterable, AsyncIterator, Callable, Mapping
 import errno
 import json
 from json import JSONDecodeError
@@ -50,6 +50,36 @@ async def cancel(task: Task[object]) -> None:
         await task
     except CancelledError:
         pass
+
+async def amerge(*iterables: AsyncIterable[T_co]) -> AsyncGenerator[T_co]:
+    """Merge multiple asynchronous *iterables* into a single generator.
+
+    The *iterables* are taken over by the generator, once it starts: When it stops, any input
+    iterators may be cancelled and any input generators are closed.
+    """
+    # While AsyncGenerator.__anext__() is a coroutine, in general Awaitable is returned by
+    # AsyncIterator.__anext__()
+    async def anext_coroutine(it: AsyncIterator[T_co]) -> T_co:
+        return await anext(it)
+    iterators = {aiter(iterable) for iterable in iterables}
+    tasks: dict[Task[T_co], AsyncIterator[T_co]] = {}
+
+    try:
+        while iterators:
+            for it in iterators - set(tasks.values()):
+                tasks[create_task(anext_coroutine(it))] = it
+            done, _ = await wait(tasks, return_when=FIRST_COMPLETED)
+            for task in done:
+                it = tasks.pop(task)
+                try:
+                    yield task.result()
+                except StopAsyncIteration:
+                    iterators.remove(it)
+    finally:
+        await gather(*(cancel(task) for task in tasks))
+        await gather(
+            *(it.aclose() # type: ignore[misc]
+              for it in iterators if isinstance(it, AsyncGenerator)))
 
 def nested(mapping: Mapping[str, object], name: str, *, separator: str = '_') -> dict[str, object]:
     """Return a dictionary with prefixed keys from a *mapping* merged into a nested dictionary.

@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-from asyncio import (Future, InvalidStateError, Queue, create_subprocess_exec, gather,
-                     get_running_loop, shield)
+from asyncio import (Future, InvalidStateError, Queue, Task, create_subprocess_exec, create_task,
+                     gather, get_running_loop, shield, wait)
 from asyncio.subprocess import Process, DEVNULL, PIPE
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Mapping
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass
 import errno
 from functools import partial
 from http import HTTPStatus
+import json
 from logging import getLogger
 from types import TracebackType
-from typing import (Annotated, ClassVar, Concatenate, Generic, Literal, ParamSpec, Self, TypeVar,
-                    cast)
+from typing import (Annotated, ClassVar, Concatenate, Generic, Literal, ParamSpec, Self, TypeAlias,
+                    TypeVar)
 from urllib.parse import quote_plus, urljoin
 
 from pydantic import BaseModel, Discriminator, Tag, TypeAdapter, ValidationError, validate_call
@@ -23,7 +24,7 @@ from tornado.websocket import WebSocketClientConnection, websocket_connect
 
 from . import context
 from .core import Text
-from .util import WebAPI
+from .util import WebAPI, amerge
 
 P = ParamSpec('P')
 R_co = TypeVar('R_co', covariant=True)
@@ -399,36 +400,6 @@ class _TwitchSessionPayload(BaseModel):
 
     session: _Session
 
-class _TwitchNotificationPayload(BaseModel):
-    class _Subscription(BaseModel):
-        type: str
-
-    subscription: _Subscription
-
-class _TwitchChannelRaidPayload(_TwitchNotificationPayload):
-    class _Event(BaseModel):
-        to_broadcaster_user_login: str
-
-    event: _Event
-
-class _TwitchStreamOnlinePayload(_TwitchNotificationPayload):
-    pass
-
-class _TwitchStreamOfflinePayload(_TwitchNotificationPayload):
-    pass
-
-def _twitch_subscription_type(data: dict[str, object]) -> str:
-    subscription = data.get('subscription')
-    subscription_type = subscription.get('type') if isinstance(subscription, dict) else None
-    return subscription_type if isinstance(subscription_type, str) else ''
-
-_AnyTwitchNotificationPayload = Annotated[
-    Annotated[_TwitchChannelRaidPayload, Tag('channel.raid')] |
-    Annotated[_TwitchStreamOnlinePayload, Tag('stream.online')] |
-    Annotated[_TwitchStreamOfflinePayload, Tag('stream.offline')],
-    Discriminator(_twitch_subscription_type)
-]
-
 class _TwitchWelcomeMessage(_TwitchMessage):
     payload: _TwitchSessionPayload
 
@@ -439,12 +410,12 @@ class _TwitchKeepaliveMessage(_TwitchMessage):
     pass
 
 class _TwitchNotificationMessage(_TwitchMessage):
-    payload: _AnyTwitchNotificationPayload
+    payload: dict[str, object]
 
-def _twitch_message_type(data: dict[str, object]) -> str:
+def _twitch_message_type(data: dict[str, object]) -> str | None:
     metadata = data.get('metadata')
     message_type = metadata.get('message_type') if isinstance(metadata, dict) else None
-    return message_type if isinstance(message_type, str) else ''
+    return message_type if isinstance(message_type, str) else None
 
 _AnyTwitchMessage = Annotated[
     Annotated[_TwitchWelcomeMessage, Tag('session_welcome')] |
@@ -454,6 +425,28 @@ _AnyTwitchMessage = Annotated[
     Discriminator(_twitch_message_type)
 ]
 _AnyTwitchMessageModel: TypeAdapter[_AnyTwitchMessage] = TypeAdapter(_AnyTwitchMessage)
+
+class _TwitchChannelRaidNotification(BaseModel):
+    class Event(BaseModel):
+        # pylint: disable=missing-class-docstring
+        to_broadcaster_user_login: str
+
+    event: Event
+
+class _TwitchStreamOfflineNotification(BaseModel):
+    pass
+
+def _twitch_subscription_type(data: dict[str, object]) -> str | None:
+    subscription = data.get('subscription')
+    subscription_type = subscription.get('type') if isinstance(subscription, dict) else None
+    return subscription_type if isinstance(subscription_type, str) else None
+
+_AnyTwitchNotification = Annotated[
+    Annotated[_TwitchChannelRaidNotification, Tag('channel.raid')] |
+    Annotated[_TwitchStreamOfflineNotification, Tag('stream.offline')],
+    Discriminator(_twitch_subscription_type)
+]
+_TwitchNotificationModel: TypeAdapter[_AnyTwitchNotification] = TypeAdapter(_AnyTwitchNotification)
 
 async def _post_twitch_token(oauth: WebAPI, endpoint: str, *, client_id: str, client_secret: str,
                              grant_type: str, **args: str) -> _TwitchToken:
@@ -472,39 +465,197 @@ async def _post_twitch_token(oauth: WebAPI, endpoint: str, *, client_id: str, cl
             raise AuthorizationError(f'Failed authorization for {client_id}') from e
         raise
 
+class _EventSub:
+    # pylint: disable=missing-docstring
+
+    Notification: TypeAlias = 'dict[str, object] | Cancellation'
+
+    class Cancellation:
+        pass
+
+    def __init__(self, api_url: str, websocket_url: str, client_id: str, token: str) -> None:
+        self.websocket_url = websocket_url
+        self.client_id = client_id
+        self._api = WebAPI(api_url,
+                           headers={'Authorization': f'Bearer {token}', 'Client-Id': client_id})
+        self._websocket: WebSocketClientConnection | None = None
+        self._session: _TwitchSessionPayload._Session | None = None
+        self._connect_task: Task[None] | None = None
+        self._read_task: Task[None] | None = None
+        self._subscriptions: dict[str, Queue[_EventSub.Notification]] = {}
+
+    async def subscribe(self, subscription_type: str,
+                        condition: Mapping[str, str]) -> AsyncGenerator[Notification]:
+        async def generator() -> AsyncGenerator[_EventSub.Notification]:
+            if not self._subscriptions:
+                await self._connect()
+            assert self._session
+            notifications: Queue[_EventSub.Notification] = Queue()
+            self._subscriptions[subscription_type] = notifications
+            try:
+                try:
+                    await self._api.call(
+                        'POST', 'subscriptions',
+                        data={
+                            'type': subscription_type,
+                            'version': '1',
+                            'condition': condition,
+                            'transport': {'method': 'websocket', 'session_id': self._session.id}
+                        })
+                except WebAPI.Error as e:
+                    match e.status:
+                        case HTTPStatus.UNAUTHORIZED:
+                            raise AuthenticationError(
+                                f'Failed authentication of {self.client_id}'
+                            ) from e
+                        case HTTPStatus.TOO_MANY_REQUESTS:
+                            # CONFLICT is only relevant for duplicate subscriptions with the same
+                            # WebSocket
+                            raise OSError(errno.EAGAIN, 'Exceeded subscription limit') from e
+                        case _:
+                            raise
+                yield {}
+
+                while True:
+                    while not notifications.empty():
+                        notification = notifications.get_nowait()
+                        yield notification
+                        notifications.task_done()
+                        if isinstance(notification, _EventSub.Cancellation):
+                            return
+                    await self._read()
+            finally:
+                # The subscription should be cancelled here (see
+                # https://dev.twitch.tv/docs/api/reference/#delete-eventsub-subscription), but at
+                # the moment usually no new subscriptions are made after closing a notification
+                # stream
+
+                del self._subscriptions[subscription_type]
+                if not self._subscriptions:
+                    self._close()
+
+        # Subscribe to notifications and ensure closing the generator always performs a cleanup
+        notifications = generator()
+        await anext(notifications) # type: ignore[misc]
+        return notifications
+
+    async def _connect(self) -> None:
+        if not self._connect_task:
+            async def func() -> None:
+                try:
+                    self._websocket = await websocket_connect(self.websocket_url)
+                    try:
+                        message = await self._read_message()
+                        if message is None:
+                            raise ConnectionResetError(errno.ECONNRESET, 'Closed connection')
+                        if not isinstance(message, _TwitchWelcomeMessage):
+                            raise OSError(
+                                errno.EPROTO,
+                                f"Unexpected message type {message.metadata.message_type}")
+                        self._session = message.payload.session
+                    except:
+                        self._close()
+                        raise
+                finally:
+                    self._connect_task = None
+            self._connect_task = create_task(func())
+        await shield(self._connect_task)
+
+    def _close(self) -> None:
+        assert self._websocket
+        self._websocket.close()
+        self._websocket = None
+        self._session = None
+
+    async def _read(self) -> None:
+        if not self._read_task:
+            async def func() -> None:
+                try:
+                    message = await self._read_message()
+                    match message:
+                        case _TwitchNotificationMessage():
+                            notification: _EventSub.Notification = message.payload
+                            notification_type = _twitch_subscription_type(message.payload)
+                        case _TwitchKeepaliveMessage():
+                            return
+                        case _TwitchReconnectMessage() | None:
+                            notification = _EventSub.Cancellation()
+                            notification_type = None
+                        case _:
+                            raise OSError(
+                                errno.EPROTO,
+                                f"Unexpected message type {message.metadata.message_type}")
+
+                    for subscription_type, notifications in self._subscriptions.items():
+                        if notification_type in (subscription_type, None):
+                            notifications.put_nowait(notification)
+                finally:
+                    self._read_task = None
+            self._read_task = create_task(func())
+        await shield(self._read_task)
+
+    async def _read_message(self) -> _TwitchMessage | None:
+        assert self._websocket
+        timeout = (self._session.keepalive_timeout_seconds if self._session else 0) + 20
+        async with asyncio.timeout(timeout):
+            data = await self._websocket.read_message()
+        if data is None:
+            return None
+        try:
+            return _AnyTwitchMessageModel.validate_json(data)
+        except ValidationError as e:
+            error = OSError(errno.EPROTO, "Bad message")
+            error.add_note(data.decode(errors='replace') if isinstance(data, bytes) else data)
+            raise error from e
+
 class TwitchStream(Stream):
     """Twitch live stream."""
 
     service: Twitch
 
-    def __init__(self, channel: Channel, category: Text, service: Twitch,
-                 _notifications: AsyncGenerator[_TwitchNotificationPayload]) -> None:
+    def __init__(
+        self, channel: Channel, category: Text, service: Twitch,
+        _offline: AsyncGenerator[_EventSub.Notification],
+        _raids: AsyncGenerator[_EventSub.Notification]
+    ) -> None:
         super().__init__(channel, category, service)
-        self._notifications = _notifications
+        self._offline = _offline
+        self._raids = _raids
+        self._notifications = amerge(self._offline, self._raids)
         self._eof = False
 
     async def __anext__(self) -> Stream.Event:
         try:
-            notification = await anext(self._notifications) # type: ignore[misc]
+            data = await anext(self._notifications) # type: ignore[misc]
         except StopAsyncIteration:
             if self._eof:
                 raise
             raise ConnectionResetError(errno.ECONNRESET, 'Closed stream') from None
+        if isinstance(data, _EventSub.Cancellation):
+            await self.aclose()
+            raise ConnectionResetError(errno.ECONNRESET, 'Closed stream')
+
+        try:
+            notification = _TwitchNotificationModel.validate_python(data)
+        except ValidationError as e:
+            await self.aclose()
+            error = OSError(errno.EPROTO, "Bad notification")
+            error.add_note(json.dumps(data))
+            raise error from e
         match notification:
-            case _TwitchChannelRaidPayload():
+            case _TwitchChannelRaidNotification():
                 return Stream.RaidEvent(
                     target_url=urljoin(self.service.url,
                                        notification.event.to_broadcaster_user_login))
-            case _TwitchStreamOfflinePayload():
+            case _TwitchStreamOfflineNotification():
                 self._eof = True
                 await self.aclose()
                 raise StopAsyncIteration()
-            case _:
-                raise OSError(errno.EPROTO,
-                              f"Unexpected notification type {notification.subscription.type}")
 
     async def aclose(self) -> None:
         await self._notifications.aclose() # type: ignore[misc]
+        # Close the sources in case the notifications generator has not started yet
+        await gather(self._offline.aclose(), self._raids.aclose()) # type: ignore[misc]
 
 class Twitch(Service[TwitchStream]):
     """Twitch connection."""
@@ -574,33 +725,51 @@ class Twitch(Service[TwitchStream]):
 
     @authenticated
     async def stream(self, channel_url: str, *, timeout: float | None = None) -> TwitchStream:
+        service = context.bot.get().get_service(self.type)
+        assert isinstance(service, Twitch)
         user = await self._get_user(channel_url)
-        notifications = await self._notifications(user)
 
-        while True:
-            streams = Twitch._Page[Twitch._Stream].model_validate(
-                await self._call('GET', 'streams', query={'user_id': user.id}))
-            try:
-                stream = streams.data[0]
-                break
-            except IndexError:
-                pass
+        async with AsyncExitStack() as cleanups:
+            eventsub = _EventSub(self.eventsub_url, self.websocket_url, self.client_id,
+                                 service.token)
+            async def subscribe(
+                subscription_type: str, condition: Mapping[str, str]
+            ) -> AsyncGenerator[_EventSub.Notification]:
+                notifications = await eventsub.subscribe(subscription_type, condition)
+                cleanups.push_async_callback(notifications.aclose) # type: ignore[misc]
+                return notifications
+            subscriptions: list[Coroutine[None, None, AsyncGenerator[_EventSub.Notification]]] = [
+                subscribe('stream.online', {'broadcaster_user_id': user.id}),
+                subscribe('stream.offline', {'broadcaster_user_id': user.id}),
+                subscribe('channel.raid', {'from_broadcaster_user_id': user.id})
+            ]
+            tasks = [create_task(subscription) for subscription in subscriptions]
+            await wait(tasks)
+            online, offline, raids = (task.result() for task in tasks)
 
-            if timeout is None:
-                raise LookupError(channel_url)
-            try:
-                async with asyncio.timeout(timeout):
-                    notification = await anext(notifications) # type: ignore[misc]
-            except TimeoutError:
-                raise StreamTimeoutError() from None
-            if not isinstance(notification, _TwitchStreamOnlinePayload):
-                raise OSError(errno.EPROTO,
-                              f"Unexpected notification type {notification.subscription.type}")
+            while True:
+                streams = Twitch._Page[Twitch._Stream].model_validate(
+                    await self._call('GET', 'streams', query={'user_id': user.id}))
+                try:
+                    stream = streams.data[0]
+                    break
+                except IndexError:
+                    pass
 
+                if timeout is None:
+                    raise LookupError(channel_url)
+                try:
+                    async with asyncio.timeout(timeout):
+                        await anext(online) # type: ignore[misc]
+                except TimeoutError:
+                    raise StreamTimeoutError() from None
+            await online.aclose() # type: ignore[misc]
+
+            cleanups.pop_all()
         return TwitchStream(
             channel=Channel(url=channel_url, name=user.display_name,
                             image_url=user.profile_image_url),
-            category=stream.game_name, service=self, _notifications=notifications)
+            category=stream.game_name, service=self, _offline=offline, _raids=raids)
 
     def _subscription(self, subscription_type: str, condition: dict[str, str],
                       session_id: str) -> dict[str, object]:
@@ -610,88 +779,6 @@ class Twitch(Service[TwitchStream]):
             'condition': condition,
             'transport': {'method': 'websocket', 'session_id': session_id}
         }
-
-    async def _read_message(self, websocket: WebSocketClientConnection, *,
-                            keepalive: float = 0) -> _TwitchMessage | None:
-        async with asyncio.timeout(keepalive + 20):
-            data = await websocket.read_message()
-        if data is None:
-            return None
-        try:
-            return _AnyTwitchMessageModel.validate_json(data)
-        except ValidationError as e:
-            error = OSError(errno.EPROTO, "Bad message")
-            error.add_note(data.decode(errors='replace') if isinstance(data, bytes) else data)
-            raise error from e
-
-    async def _notifications(self, user: _User) -> AsyncGenerator[_TwitchNotificationPayload]:
-        async def generator() -> AsyncGenerator[_TwitchNotificationPayload | None]:
-            service = context.bot.get().get_service(self.type)
-            assert isinstance(service, Twitch)
-
-            websocket = await websocket_connect(self.websocket_url)
-            try:
-                message = await self._read_message(websocket)
-                if message is None:
-                    raise ConnectionResetError(errno.ECONNRESET, 'Closed stream')
-                if not isinstance(message, _TwitchWelcomeMessage):
-                    raise OSError(errno.EPROTO,
-                                  f"Unexpected message type {message.metadata.message_type}")
-                session = message.payload.session
-
-                eventsub = WebAPI(
-                    self.eventsub_url,
-                    headers={
-                        'Authorization': f'Bearer {service.token}',
-                        'Client-Id': self.client_id
-                    })
-                subscriptions = [
-                    self._subscription('channel.raid', {'from_broadcaster_user_id': user.id},
-                                       session.id),
-                    self._subscription('stream.online', {'broadcaster_user_id': user.id},
-                                       session.id),
-                    self._subscription('stream.offline', {'broadcaster_user_id': user.id},
-                                       session.id)
-                ]
-                try:
-                    await gather(
-                        *(eventsub.call('POST', 'subscriptions', data=subscription)
-                          for subscription in subscriptions))
-                except WebAPI.Error as e:
-                    match e.status:
-                        case HTTPStatus.UNAUTHORIZED:
-                            raise AuthenticationError(
-                                f'Failed authentication of {self.client_id}'
-                            ) from e
-                        case HTTPStatus.TOO_MANY_REQUESTS:
-                            # CONFLICT is only relevant for duplicate subscriptions with the same
-                            # WebSocket
-                            raise OSError(errno.EAGAIN, 'Exceeded subscription limit') from e
-                        case _:
-                            raise
-                yield None
-
-                while True:
-                    message = await self._read_message(
-                        websocket, keepalive=session.keepalive_timeout_seconds)
-                    match message:
-                        case _TwitchNotificationMessage():
-                            yield message.payload
-                        case _TwitchKeepaliveMessage():
-                            pass
-                        case _TwitchReconnectMessage() | None:
-                            return
-                        case _:
-                            raise OSError(
-                                errno.EPROTO,
-                                f"Unexpected message type {message.metadata.message_type}")
-            finally:
-                websocket.close()
-
-        # Subscribe to notifications and ensure closing the generator always performs a cleanup
-        notifications = generator()
-        await anext(notifications) # type: ignore[misc]
-        return cast(AsyncGenerator[_TwitchNotificationPayload], notifications)
 
     async def reauthorize(self) -> Self:
         service = context.bot.get().get_service(self.type)
