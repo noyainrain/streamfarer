@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from configparser import ConfigParser, ParsingError
 from importlib import resources
 import logging
-from logging import getLogger
+from logging import FileHandler, Formatter, StreamHandler, getLogger
 import signal
 from signal import getsignal, SIGINT, SIGTERM
 from sqlite3 import OperationalError
@@ -27,6 +27,7 @@ from .util import text
 class _Arguments:
     command: Callable[[_Arguments], Awaitable[int]]
     database_url: str
+    message_log: str
     host: str
     port: int
     url: str
@@ -125,6 +126,9 @@ async def _connect_twitch(args: _Arguments) -> int:
     try:
         await context.bot.get().twitch.connect(args.client_id, args.client_secret, args.code,
                                                args.url, None, None, None, None)
+    except ValueError:
+        print('insufficient scopes', file=sys.stderr)
+        return 2
     except AuthorizationError:
         print('⚠️ Failed to get authorization with CLIENT_ID, CLIENT_SECRET and CODE',
               file=sys.stderr)
@@ -141,6 +145,7 @@ async def main(*args: str) -> int:
         description='Live stream traveling bot and tiny art experiment. ⛵',
         epilog=f'Streamfarer {VERSION}', argument_default=argparse.SUPPRESS)
     parser.add_argument('--database-url', help='SQLite database URL')
+    parser.add_argument('--message-log', help='path to the chat message log')
     subparsers = parser.add_subparsers(required=True)
 
     run_help = 'Run the bot.'
@@ -196,7 +201,8 @@ async def main(*args: str) -> int:
         2. Register an application at https://dev.twitch.tv/console/apps/create and set OAuth \
 Redirect URLs to URL. Obtain CLIENT_ID and CLIENT_SECRET.
         3. Authorize the application with the bot account at \
-https://id.twitch.tv/oauth2/authorize?client_id=CLIENT_ID&redirect_uri=URL&response_type=code. \
+https://id.twitch.tv/oauth2/authorize\
+?client_id=CLIENT_ID&redirect_uri=URL&response_type=code&scope=user:read:chat+user:write:chat. \
 Obtain CODE from the address bar.
 
         URL corresponds to the configuration option.
@@ -229,6 +235,8 @@ Obtain CODE from the address bar.
     options = config['streamfarer']
     if not hasattr(parsed_args, 'database_url'):
         parsed_args.database_url = options['database_url']
+    if not hasattr(parsed_args, 'message_log'):
+        parsed_args.message_log = options['message_log']
     parsed_args.host = options['host']
     try:
         parsed_args.port = int(options['port'])
@@ -237,8 +245,22 @@ Obtain CODE from the address bar.
         return 1
     parsed_args.url = options['url'] or server_url(parsed_args.host, parsed_args.port)
 
-    logging.basicConfig(format='%(asctime)s %(levelname)s %(name)s %(message)s', level=logging.INFO)
+    formatter = Formatter(fmt='%(asctime)s %(levelname)s %(name)s %(message)s')
+    stream_handler = StreamHandler()
+    stream_handler.setFormatter(formatter)
+    root_logger = getLogger()
+    root_logger.addHandler(stream_handler)
+    root_logger.setLevel(logging.INFO)
     getLogger('asyncio').setLevel(logging.WARNING)
+    try:
+        message_log_handler = FileHandler(parsed_args.message_log)
+    except OSError as e:
+        print(f'⚠️ Failed to access the chat message log ({e})', file=sys.stderr)
+        return 1
+    message_log_handler.setFormatter(formatter)
+    message_logger = getLogger('streamfarer.messages')
+    message_logger.addHandler(message_log_handler)
+    message_logger.propagate = False
 
     Bot(database_url=parsed_args.database_url)
     try:

@@ -10,7 +10,7 @@ from pydantic import BaseModel, validate_call
 
 from . import context
 from .core import Event, Text, format_datetime
-from .services import Channel
+from .services import Channel, Message
 from .util import nested, randstr
 
 class OngoingJourneyError(Exception):
@@ -228,6 +228,9 @@ class Journey(BaseModel):
                     (randstr(), self.id, stream.channel.url, stream.channel.name,
                      stream.channel.image_url, stream.category, now, None))
                 stay = Stay.model_validate(nested(dict(next(rows)), 'channel'))
+            if not stream.chat:
+                bot.log_message(
+                    Message(frm='', to=stream.channel.name, text='Bot is banned from chat'))
         bot.dispatch_event(Event(type='journey-travel-on'))
         return stay
 

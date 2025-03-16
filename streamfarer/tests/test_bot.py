@@ -6,10 +6,10 @@ import logging
 from tempfile import NamedTemporaryFile
 from unittest import IsolatedAsyncioTestCase
 
-from streamfarer.bot import Bot
+from streamfarer.bot import Bot, MessageEvent
 from streamfarer.core import Event
 from streamfarer.journey import OngoingJourneyError
-from streamfarer.services import LocalService
+from streamfarer.services import LocalService, Message
 from streamfarer.util import cancel
 
 class TestCase(IsolatedAsyncioTestCase):
@@ -53,9 +53,23 @@ class BotTestCase(TestCase):
             # Let the task start up
             await sleep(0)
 
+            await self.bot.message('Meow!')
+            event: Event = await anext(self.events)
+            self.assertEqual(
+                event,
+                MessageEvent(
+                    type='message',
+                    message=Message(frm='Streamfarer', to=self.channel.name, text='Meow!')))
+
+            await self.local.ban(self.channel.url)
+            event = await anext(self.events)
+            assert isinstance(event, MessageEvent)
+            self.assertFalse(event.message.frm)
+            self.assertEqual(event.message.to, self.channel.name)
+
             self.tick()
             await self.local.raid(self.channel.url, next_channel.url)
-            event: Event = await anext(self.events)
+            event = await anext(self.events)
             self.assertEqual(event.type, 'journey-travel-on')
 
             await self.local.stop(next_channel.url)

@@ -21,14 +21,24 @@ from pydantic import Field, TypeAdapter, validate_call
 from . import context
 from .core import Event, Text
 from .journey import EndedJourneyError, Journey, OngoingJourneyError, PastJourneyError, Stay
-from .services import (AuthenticationError, LocalService, LocalServiceAdapter, Service, Stream,
-                       StreamTimeoutError, Twitch, TwitchAdapter)
+from .services import (AuthenticationError, LocalService, LocalServiceAdapter, Message, Service,
+                       Stream, StreamTimeoutError, Twitch, TwitchAdapter)
 from .util import Connection, add_column, randstr, urlorigin
 
-VERSION = '0.2.2'
+VERSION = '0.2.3'
 
 _P = ParamSpec('_P')
 _R_co = TypeVar('_R_co', covariant=True)
+
+class MessageEvent(Event):
+    """Dispatched when a message is received in the current chat.
+
+    .. attribute:: message
+
+       Relevant chat message.
+    """
+
+    message: Message
 
 class Bot:
     """Live stream traveling bot.
@@ -86,6 +96,7 @@ class Bot:
         self.now = now
         self._db: Connection[Row] | None = None
         self._event_queues: set[Queue[Event]] = set()
+        self._stream: Stream | None  = None
 
         if context.bot.get(None):
             raise RuntimeError('Duplicate bot in task')
@@ -128,21 +139,31 @@ class Bot:
         while True:
             try:
                 try:
-                    stream = await self.stream(stay.channel.url)
+                    self._stream = await self.stream(stay.channel.url)
                 except LookupError:
                     logger.info('Channel at %s is offline', stay.channel.url)
                 else:
-                    async with stream:
-                        async for event in stream:
-                            assert isinstance(event, Stream.RaidEvent)
-                            logger.info('Stream at %s raided %s', stay.channel.url,
-                                        event.target_url)
-                            try:
-                                return await self._travel_on(journey, event.target_url)
-                            except LookupError:
-                                logger.info('Channel at %s is offline', event.target_url)
-                        else:
-                            logger.info('Stream at %s stopped', stay.channel.url)
+                    try:
+                        async with self._stream:
+                            async for event in self._stream:
+                                match event:
+                                    case Stream.RaidEvent(target_url=target_url):
+                                        logger.info('Stream at %s raided %s', stay.channel.url,
+                                                    target_url)
+                                        try:
+                                            return await self._travel_on(journey, target_url)
+                                        except LookupError:
+                                            logger.info('Channel at %s is offline', target_url)
+                                    case Stream.MessageEvent(message=message):
+                                        self.log_message(message)
+                                    case Stream.Event(type='ban'):
+                                        self.log_message(
+                                            Message(frm='', to=self._stream.channel.name,
+                                                    text='Bot is banned from chat'))
+                            else:
+                                logger.info('Stream at %s stopped', stay.channel.url)
+                    finally:
+                        self._stream = None
 
                 try:
                     journey = journey.end()
@@ -251,7 +272,22 @@ class Bot:
                     """,
                     (randstr(), journey.id, stream.channel.url, stream.channel.name,
                      stream.channel.image_url, stream.category, start_time, None))
-                return journey
+            if not stream.chat:
+                self.log_message(
+                    Message(frm='', to=stream.channel.name, text='Bot is banned from chat'))
+            return journey
+
+    @validate_call # type: ignore[misc]
+    async def message(self, text: Text) -> None:
+        """Send a message with *text* to the current chat.
+
+        If authentication with the livestreaming service fails, an :exc:`AuthenticationError` is
+        raised. If there is a problem communicating with the livestreaming service, an
+        :exc:`OSError` is raised.
+        """
+        if not self._stream:
+            raise OSError('Offline bot')
+        await self._stream.message(text)
 
     def get_services(self) -> list[Service[Stream]]:
         """Get connected livestreaming services."""
@@ -296,6 +332,15 @@ class Bot:
             self._update(self._db)
         return self._db
 
+    def log_message(self, message: Message) -> None:
+        """Plumbing: Log a chat *message*."""
+        logger = getLogger('streamfarer.messages')
+        if message.frm:
+            logger.info('%s %s: %s', message.to, message.frm, message.text)
+        else:
+            logger.warning('%s %s', message.to, message.text)
+        self.dispatch_event(MessageEvent(type='message', message=message))
+
     def _update(self, db: Connection[Row]) -> None:
         with db:
             db.execute(
@@ -338,7 +383,8 @@ class Bot:
                     client_id,
                     client_secret,
                     token,
-                    refresh_token
+                    refresh_token,
+                    user_id
                 )
                 """)
 
@@ -380,3 +426,13 @@ class Bot:
                 db, 'stays', 'channel_image_url',
                 'https://static-cdn.jtvnw.net/user-default-pictures-uv/'
                 '998f01ae-def8-11e9-b95c-784f43822e80-profile_image-300x300.png')
+
+            # Update Twitch.user_id
+            add_column(db, 'services', 'user_id')
+            # Require reconnecting Twitch to retrieve the user ID (which is the only way if Twitch
+            # is already disconnected)
+            db.execute(
+                """
+                UPDATE services SET user_id = '', token = '', refresh_token = ''
+                WHERE type = 'twitch' AND user_id IS NULL
+                """)

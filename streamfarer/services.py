@@ -29,6 +29,7 @@ from .util import WebAPI, amerge
 P = ParamSpec('P')
 R_co = TypeVar('R_co', covariant=True)
 S = TypeVar('S', bound='Service[Stream]')
+S_contra = TypeVar('S_contra', bound='Service[Stream] | Stream', contravariant=True)
 
 _T = TypeVar('_T')
 
@@ -37,6 +38,9 @@ class AuthenticationError(Exception):
 
 class AuthorizationError(Exception):
     """Raised when getting authorization from a livestreaming service fails."""
+
+class AccessError(Exception):
+    """Raised when performing an operation is not allowed."""
 
 class StreamTimeoutError(Exception):
     """Raised when awaiting a channel to come online times out."""
@@ -61,20 +65,41 @@ class Channel(BaseModel):
     name: Text
     image_url: str
 
+class Message(BaseModel):
+    """Chat message.
+
+    .. attribute:: frm
+
+       Name of the sender.
+
+    .. attribute:: to
+
+       Target channel name.
+
+    .. attribute:: text
+
+       Message content.
+    """
+
+    frm: str
+    to: Text
+    text: Text
+
 def authenticated(
-    func: Callable[Concatenate[S, P], Awaitable[R_co]]
-) -> Callable[Concatenate[S, P], Coroutine[None, None, R_co]]:
+    func: Callable[Concatenate[S_contra, P], Awaitable[R_co]]
+) -> Callable[Concatenate[S_contra, P], Coroutine[None, None, R_co]]:
     """Decorator for a service operation that requires authentication.
 
     If an :exc:`AuthenticationError` is raised, the service is reconnected.
     """
-    async def wrapper(self: S, /, *args: P.args, **kwargs: P.kwargs) -> R_co:
+    async def wrapper(self: S_contra, /, *args: P.args, **kwargs: P.kwargs) -> R_co:
         while True:
             try:
                 return await func(self, *args, **kwargs)
             except AuthenticationError as e:
                 try:
-                    await self.reconnect()
+                    service = self.service if isinstance(self, Stream) else self
+                    await service.reconnect()
                     getLogger(__name__).info('Reconnected the livestreaming service')
                 except AuthorizationError:
                     raise e from None
@@ -83,8 +108,11 @@ def authenticated(
 class Stream(AbstractAsyncContextManager['Stream']):
     """Live stream.
 
-    Reading from the stream may raise an :exc:`OSError` if there is a problem communicating with the
-    livestreaming service.
+    Any operation may raise an :exc:`AuthenticationError` if authentication fails or an
+    :exc:`OSError` if there is a problem communicating with the livestreaming service.
+
+    When the stream raids another, a `raid` event is yielded. When a chat message is sent, a
+    `message` event is yielded. When the user is banned from chat, a `ban` event is yielded.
 
     .. attribute:: channel
 
@@ -94,6 +122,10 @@ class Stream(AbstractAsyncContextManager['Stream']):
 
        Stream category.
 
+    .. attribute:: chat
+
+       Whether chat is available. For example, the user may be banned from chat.
+
     .. attribute:: service
 
        Livestreaming service.
@@ -101,10 +133,18 @@ class Stream(AbstractAsyncContextManager['Stream']):
 
     channel: Channel
     category: Text
+    chat: bool
     service: Service[Stream]
 
     class Event(BaseModel):
-        """Live stream event."""
+        """Live stream event.
+
+        .. attribute:: type
+
+           Event type.
+        """
+
+        type: str
 
     class RaidEvent(Event):
         """Dispatched when the stream raids another.
@@ -116,9 +156,21 @@ class Stream(AbstractAsyncContextManager['Stream']):
 
         target_url: str
 
-    def __init__(self, channel: Channel, category: Text, service: Service[Stream]) -> None:
+    class MessageEvent(Event):
+        """Yielded when a chat message is sent.
+
+        .. attribute:: message
+
+           Relevant chat message.
+        """
+
+        message: Message
+
+    def __init__(self, channel: Channel, category: Text, chat: bool,
+                 service: Service[Stream]) -> None:
         self.channel = channel
         self.category = category
+        self.chat = chat
         self.service = service
 
     def __aiter__(self) -> Self:
@@ -136,6 +188,15 @@ class Stream(AbstractAsyncContextManager['Stream']):
         traceback: TracebackType | None
     ) -> None:
         await self.aclose()
+
+    @authenticated
+    async def message(self, text: Text) -> None:
+        """Send a message with *text* to the chat.
+
+        If the user is not allowed to send a message, e.g. because they are banned from chat, an
+        :exc:`AccessError` is raised.
+        """
+        raise NotImplementedError()
 
 # Work around the Pydantic mypy plugin failing for type variables defined before their bound class
 L_co = TypeVar('L_co', bound=Stream, covariant=True)
@@ -238,6 +299,12 @@ class Service(BaseModel, Generic[L_co]):
         """
         raise RuntimeError('Unsupported operation')
 
+    async def ban(self, channel_url: str) -> None:
+        """Ban the user themself from chat at the given *channel_url*.
+
+        If the service does not support the utility, a :exc:`RuntimeError` is raised.
+        """
+
 class ServiceAdapter(Generic[P, S]):
     """Livestreaming service adapter."""
 
@@ -265,12 +332,16 @@ class LocalStream(Stream):
 
     service: LocalService
 
-    def __init__(self, channel: Channel, category: Text, service: LocalService,
-                 _events: Queue[Stream.Event | Exception], _close: Callable[[], None]) -> None:
-        super().__init__(channel, category, service)
+    def __init__(
+        self, channel: Channel, category: Text, chat: bool, service: LocalService,
+        _events: Queue[Stream.Event | Exception], _close: Callable[[], None],
+        _message: Callable[[Text], None]
+    ) -> None:
+        super().__init__(channel, category, chat, service)
         self._events = _events
         self._error: Exception | None = None
         self._close = _close
+        self._message = _message
 
     async def __anext__(self) -> Stream.Event:
         event = self._error or await self._events.get()
@@ -281,6 +352,11 @@ class LocalStream(Stream):
 
     async def aclose(self) -> None:
         self._close()
+
+    @authenticated
+    @validate_call # type: ignore[misc]
+    async def message(self, text: Text) -> None:
+        self._message(text)
 
 class LocalService(Service[LocalStream]):
     """Local livestreaming service."""
@@ -293,6 +369,10 @@ class LocalService(Service[LocalStream]):
     class _Broadcast:
         category: Text
         streams: set[Queue[Stream.Event | Exception]]
+
+        def send(self, event: Stream.Event | Exception) -> None:
+            for events in self.streams:
+                events.put_nowait(event)
 
     url: ClassVar[str] = 'streamfarer:'
     name: ClassVar[str] = 'Local Livestreaming Service'
@@ -319,8 +399,14 @@ class LocalService(Service[LocalStream]):
 
         events: Queue[Stream.Event | Exception] = Queue()
         broadcast.streams.add(events)
-        stream = LocalStream(channel=channel, category=broadcast.category, service=self,
-                             _events=events, _close=partial(self._close_stream, broadcast, events))
+
+        def message(text: Text) -> None:
+            broadcast.send(
+                Stream.MessageEvent(type='message',
+                                    message=Message(frm='Streamfarer', to=channel.name, text=text)))
+        stream = LocalStream(
+            channel=channel, category=broadcast.category, chat=True, service=self, _events=events,
+            _close=partial(self._close_stream, broadcast, events), _message=message)
         return stream
 
     def _close_stream(self, broadcast: _Broadcast, events: Queue[Stream.Event | Exception]) -> None:
@@ -362,8 +448,7 @@ class LocalService(Service[LocalStream]):
             return
         future: Future[LocalService._Broadcast] = get_running_loop().create_future()
         self._broadcasts[channel_url] = future
-        for events in broadcast.streams:
-            events.put_nowait(StopAsyncIteration())
+        broadcast.send(StopAsyncIteration())
 
     async def raid(self, channel_url: str, target_url: str) -> None:
         try:
@@ -371,8 +456,14 @@ class LocalService(Service[LocalStream]):
         except InvalidStateError:
             raise LookupError(channel_url) from None
         target = await self.get_channel(target_url)
-        for events in broadcast.streams:
-            events.put_nowait(Stream.RaidEvent(target_url=target.url))
+        broadcast.send(Stream.RaidEvent(type='raid', target_url=target.url))
+
+    async def ban(self, channel_url: str) -> None:
+        try:
+            broadcast = self._broadcasts[channel_url].result()
+        except InvalidStateError:
+            raise LookupError(channel_url) from None
+        broadcast.send(Stream.Event(type='ban'))
 
     def __str__(self) -> str:
         return f'📺 {self.name}'
@@ -383,9 +474,25 @@ class LocalServiceAdapter(ServiceAdapter[[], LocalService]):
     async def authorize(self) -> LocalService:
         return LocalService(type='local')
 
+class _TwitchPage(BaseModel, Generic[_T]):
+    data: list[_T]
+
 class _TwitchToken(BaseModel):
     access_token: str
     refresh_token: str
+    scope: list[str] = []
+
+class _TwitchUser(BaseModel):
+    id: str
+    display_name: str
+    profile_image_url: str
+
+class _TwitchChatMessage(BaseModel):
+    class DropReason(BaseModel):
+        # pylint: disable=missing-class-docstring
+        message: str
+
+    drop_reason: DropReason | None
 
 class _TwitchMessage(BaseModel):
     class _Metadata(BaseModel):
@@ -409,6 +516,17 @@ class _TwitchReconnectMessage(_TwitchMessage):
 class _TwitchKeepaliveMessage(_TwitchMessage):
     pass
 
+class _TwitchRevocationMessage(_TwitchMessage):
+    class Payload(BaseModel):
+        # pylint: disable=missing-class-docstring
+
+        class Subscription(BaseModel):
+            type: str
+
+        subscription: Subscription
+
+    payload: Payload
+
 class _TwitchNotificationMessage(_TwitchMessage):
     payload: dict[str, object]
 
@@ -421,10 +539,14 @@ _AnyTwitchMessage = Annotated[
     Annotated[_TwitchWelcomeMessage, Tag('session_welcome')] |
     Annotated[_TwitchReconnectMessage, Tag('session_reconnect')] |
     Annotated[_TwitchKeepaliveMessage, Tag('session_keepalive')] |
+    Annotated[_TwitchRevocationMessage, Tag('revocation')] |
     Annotated[_TwitchNotificationMessage, Tag('notification')],
     Discriminator(_twitch_message_type)
 ]
 _AnyTwitchMessageModel: TypeAdapter[_AnyTwitchMessage] = TypeAdapter(_AnyTwitchMessage)
+
+class _TwitchStreamOfflineNotification(BaseModel):
+    pass
 
 class _TwitchChannelRaidNotification(BaseModel):
     class Event(BaseModel):
@@ -433,8 +555,17 @@ class _TwitchChannelRaidNotification(BaseModel):
 
     event: Event
 
-class _TwitchStreamOfflineNotification(BaseModel):
-    pass
+class _TwitchChannelChatMessageNotification(BaseModel):
+    class Event(BaseModel):
+        # pylint: disable=missing-class-docstring
+
+        class Message(BaseModel):
+            text: str
+
+        chatter_user_name: str
+        message: Message
+
+    event: Event
 
 def _twitch_subscription_type(data: dict[str, object]) -> str | None:
     subscription = data.get('subscription')
@@ -442,8 +573,9 @@ def _twitch_subscription_type(data: dict[str, object]) -> str | None:
     return subscription_type if isinstance(subscription_type, str) else None
 
 _AnyTwitchNotification = Annotated[
+    Annotated[_TwitchStreamOfflineNotification, Tag('stream.offline')] |
     Annotated[_TwitchChannelRaidNotification, Tag('channel.raid')] |
-    Annotated[_TwitchStreamOfflineNotification, Tag('stream.offline')],
+    Annotated[_TwitchChannelChatMessageNotification, Tag('channel.chat.message')],
     Discriminator(_twitch_subscription_type)
 ]
 _TwitchNotificationModel: TypeAdapter[_AnyTwitchNotification] = TypeAdapter(_AnyTwitchNotification)
@@ -470,8 +602,9 @@ class _EventSub:
 
     Notification: TypeAlias = 'dict[str, object] | Cancellation'
 
-    class Cancellation:
-        pass
+    class Cancellation(BaseModel):
+        subscription_type: str
+        reason: Literal['close', 'revoke']
 
     def __init__(self, api_url: str, websocket_url: str, client_id: str, token: str) -> None:
         self.websocket_url = websocket_url
@@ -508,6 +641,8 @@ class _EventSub:
                             raise AuthenticationError(
                                 f'Failed authentication of {self.client_id}'
                             ) from e
+                        case HTTPStatus.FORBIDDEN:
+                            raise AccessError('Denied access') from e
                         case HTTPStatus.TOO_MANY_REQUESTS:
                             # CONFLICT is only relevant for duplicate subscriptions with the same
                             # WebSocket
@@ -573,22 +708,30 @@ class _EventSub:
                 try:
                     message = await self._read_message()
                     match message:
-                        case _TwitchNotificationMessage():
-                            notification: _EventSub.Notification = message.payload
-                            notification_type = _twitch_subscription_type(message.payload)
+                        case _TwitchNotificationMessage(payload=payload):
+                            notification: _EventSub.Notification = payload
+                            notification_type = _twitch_subscription_type(payload) or ''
+                        case _TwitchRevocationMessage(payload=payload):
+                            notification = _EventSub.Cancellation(
+                                subscription_type=payload.subscription.type, reason='revoke')
+                            notification_type = payload.subscription.type
                         case _TwitchKeepaliveMessage():
                             return
                         case _TwitchReconnectMessage() | None:
-                            notification = _EventSub.Cancellation()
-                            notification_type = None
+                            for subscription_type, notifications in self._subscriptions.items():
+                                notifications.put_nowait(
+                                    _EventSub.Cancellation(subscription_type=subscription_type,
+                                                           reason='close'))
+                            return
                         case _:
                             raise OSError(
                                 errno.EPROTO,
                                 f"Unexpected message type {message.metadata.message_type}")
 
-                    for subscription_type, notifications in self._subscriptions.items():
-                        if notification_type in (subscription_type, None):
-                            notifications.put_nowait(notification)
+                    try:
+                        self._subscriptions[notification_type].put_nowait(notification)
+                    except KeyError:
+                        pass
                 finally:
                     self._read_task = None
             self._read_task = create_task(func())
@@ -616,12 +759,16 @@ class TwitchStream(Stream):
     def __init__(
         self, channel: Channel, category: Text, service: Twitch,
         _offline: AsyncGenerator[_EventSub.Notification],
-        _raids: AsyncGenerator[_EventSub.Notification]
+        _raids: AsyncGenerator[_EventSub.Notification],
+        _messages: AsyncGenerator[_EventSub.Notification] | None, _user: _TwitchUser
     ) -> None:
-        super().__init__(channel, category, service)
+        super().__init__(channel=channel, category=category, chat=bool(_messages), service=service)
         self._offline = _offline
         self._raids = _raids
-        self._notifications = amerge(self._offline, self._raids)
+        self._messages = _messages
+        self._notifications = (amerge(self._offline, self._raids, self._messages)
+                               if self._messages else amerge(self._offline, self._raids))
+        self._user = _user
         self._eof = False
 
     async def __anext__(self) -> Stream.Event:
@@ -631,9 +778,19 @@ class TwitchStream(Stream):
             if self._eof:
                 raise
             raise ConnectionResetError(errno.ECONNRESET, 'Closed stream') from None
-        if isinstance(data, _EventSub.Cancellation):
-            await self.aclose()
-            raise ConnectionResetError(errno.ECONNRESET, 'Closed stream')
+        match data:
+            case (
+                _EventSub.Cancellation(subscription_type='channel.chat.message', reason='revoke')
+            ):
+                self._messages = None
+                self.chat = False
+                return Stream.Event(type='ban')
+            case _EventSub.Cancellation(reason='close'):
+                await self.aclose()
+                raise ConnectionResetError(errno.ECONNRESET, 'Closed stream')
+            case _EventSub.Cancellation():
+                await self.aclose()
+                raise ConnectionResetError(errno.ECONNRESET, 'Partial stream')
 
         try:
             notification = _TwitchNotificationModel.validate_python(data)
@@ -643,10 +800,15 @@ class TwitchStream(Stream):
             error.add_note(json.dumps(data))
             raise error from e
         match notification:
-            case _TwitchChannelRaidNotification():
+            case _TwitchChannelRaidNotification(event=event):
                 return Stream.RaidEvent(
-                    target_url=urljoin(self.service.url,
-                                       notification.event.to_broadcaster_user_login))
+                    type='raid',
+                    target_url=urljoin(self.service.url, event.to_broadcaster_user_login))
+            case _TwitchChannelChatMessageNotification(event=event):
+                return Stream.MessageEvent(
+                    type='message',
+                    message=Message(frm=event.chatter_user_name, to=self.channel.name,
+                                    text=event.message.text))
             case _TwitchStreamOfflineNotification():
                 self._eof = True
                 await self.aclose()
@@ -656,6 +818,23 @@ class TwitchStream(Stream):
         await self._notifications.aclose() # type: ignore[misc]
         # Close the sources in case the notifications generator has not started yet
         await gather(self._offline.aclose(), self._raids.aclose()) # type: ignore[misc]
+        if self._messages:
+            await self._messages.aclose() # type: ignore[misc]
+
+    @authenticated
+    @validate_call # type: ignore[misc]
+    async def message(self, text: Text) -> None:
+        messages = _TwitchPage[_TwitchChatMessage].model_validate(
+            await self.service._call(
+                'POST', 'chat/messages',
+                data={
+                    'broadcaster_id': self._user.id,
+                    'sender_id': self.service.user_id,
+                    'message': text
+                }))
+        message = messages.data[0]
+        if message.drop_reason:
+            raise AccessError(message.drop_reason.message)
 
 class Twitch(Service[TwitchStream]):
     """Twitch connection."""
@@ -684,14 +863,8 @@ class Twitch(Service[TwitchStream]):
     token: str
     """Refresh token."""
     refresh_token: str
-
-    class _Page(BaseModel, Generic[_T]):
-        data: list[_T]
-
-    class _User(BaseModel):
-        id: str
-        display_name: str
-        profile_image_url: str
+    """User ID."""
+    user_id: str
 
     class _Stream(BaseModel):
         game_name: str
@@ -738,6 +911,7 @@ class Twitch(Service[TwitchStream]):
                 notifications = await eventsub.subscribe(subscription_type, condition)
                 cleanups.push_async_callback(notifications.aclose) # type: ignore[misc]
                 return notifications
+
             subscriptions: list[Coroutine[None, None, AsyncGenerator[_EventSub.Notification]]] = [
                 subscribe('stream.online', {'broadcaster_user_id': user.id}),
                 subscribe('stream.offline', {'broadcaster_user_id': user.id}),
@@ -747,8 +921,17 @@ class Twitch(Service[TwitchStream]):
             await wait(tasks)
             online, offline, raids = (task.result() for task in tasks)
 
+            messages = None
+            if self.api_url == TwitchAdapter.PRODUCTION_API_URL:
+                try:
+                    messages = await subscribe(
+                        'channel.chat.message',
+                        {'broadcaster_user_id': user.id, 'user_id': self.user_id})
+                except AccessError:
+                    pass
+
             while True:
-                streams = Twitch._Page[Twitch._Stream].model_validate(
+                streams = _TwitchPage[Twitch._Stream].model_validate(
                     await self._call('GET', 'streams', query={'user_id': user.id}))
                 try:
                     stream = streams.data[0]
@@ -769,7 +952,8 @@ class Twitch(Service[TwitchStream]):
         return TwitchStream(
             channel=Channel(url=channel_url, name=user.display_name,
                             image_url=user.profile_image_url),
-            category=stream.game_name, service=self, _offline=offline, _raids=raids)
+            category=stream.game_name, service=self, _offline=offline, _raids=raids,
+            _messages=messages, _user=user)
 
     def _subscription(self, subscription_type: str, condition: dict[str, str],
                       session_id: str) -> dict[str, object]:
@@ -830,12 +1014,12 @@ class Twitch(Service[TwitchStream]):
                 raise AuthenticationError(f'Failed authentication of {self.client_id}') from e
             raise
 
-    async def _get_user(self, channel_url: str) -> Twitch._User:
+    async def _get_user(self, channel_url: str) -> _TwitchUser:
         try:
             login = self.get_login(channel_url)
         except ValueError:
             raise LookupError(channel_url) from None
-        users = Twitch._Page[Twitch._User].model_validate(
+        users = _TwitchPage[_TwitchUser].model_validate(
             await self._call("GET", "users", query={'login': login}))
         try:
             return users.data[0]
@@ -871,14 +1055,27 @@ class TwitchAdapter(
             token = await _post_twitch_token(
                 oauth, 'token', client_id=client_id, client_secret=client_secret,
                 grant_type='authorization_code', code=code, redirect_uri=redirect_uri)
+            if not (set(token.scope) >= {'user:read:chat', 'user:write:chat'}):
+                raise ValueError('Insufficent scopes')
         else:
             token = await _post_twitch_token(
                 oauth, 'authorize', client_id=client_id, client_secret=client_secret,
                 grant_type='user_token', user_id=code)
 
+        try:
+            api = WebAPI(
+                api_url or self.PRODUCTION_API_URL,
+                headers={'Authorization': f'Bearer {token.access_token}', 'Client-Id': client_id})
+            users = _TwitchPage[_TwitchUser].model_validate(await api.call("GET", "users"))
+            user = users.data[0]
+        except WebAPI.Error as e:
+            if e.status == HTTPStatus.UNAUTHORIZED:
+                raise AuthorizationError(f'Failed authorization for {client_id}') from e
+            raise
+
         return Twitch(
-            type='twitch', api_url=api_url or self.PRODUCTION_API_URL, oauth_url=oauth.url,
+            type='twitch', api_url=api.url, oauth_url=oauth.url,
             eventsub_url=eventsub_url or 'https://api.twitch.tv/helix/eventsub/',
             websocket_url=websocket_url or 'wss://eventsub.wss.twitch.tv/ws',
             client_id=client_id, client_secret=client_secret, token=token.access_token,
-            refresh_token=token.refresh_token)
+            refresh_token=token.refresh_token, user_id=user.id)

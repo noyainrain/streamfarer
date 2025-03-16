@@ -4,6 +4,7 @@ from asyncio import create_task
 from contextlib import redirect_stderr, redirect_stdout
 from contextvars import Context
 from io import StringIO
+from tempfile import NamedTemporaryFile
 
 from streamfarer.__main__ import main
 
@@ -11,11 +12,15 @@ from .test_bot import TestCase
 
 class MainTest(TestCase):
     async def main(self, *args: str) -> tuple[int, str]:
-        with redirect_stderr(StringIO()), redirect_stdout(StringIO()) as f:
+        with (
+            redirect_stderr(StringIO()), redirect_stdout(StringIO()) as stdout,
+            NamedTemporaryFile() as message_log
+        ):
             code = await create_task(
-                main('python3 -m streamfarer', f'--database-url={self.bot.database_url}', *args),
+                main('python3 -m streamfarer', f'--database-url={self.bot.database_url}',
+                     f'--message-log={message_log.name}', *args),
                 context=Context())
-        return code, f.getvalue()
+        return code, stdout.getvalue()
 
     async def test_journey(self) -> None:
         journey = await self.bot.start_journey(self.channel.url, 'Roaming')
