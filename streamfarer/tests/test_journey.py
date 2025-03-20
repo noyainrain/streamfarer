@@ -1,7 +1,7 @@
 # pylint: disable=missing-docstring
 
 from streamfarer.core import Event
-from streamfarer.journey import EndedJourneyError, OngoingJourneyError, PastJourneyError
+from streamfarer.journey import EndedJourneyError, OngoingJourneyError, PastJourneyError, StayEvent
 
 from .test_bot import TestCase
 
@@ -80,6 +80,8 @@ class JourneyTest(TestCase):
         self.assertEqual(stay.category, self.category)
         self.assertEqual(stay.start_time, self.now())
         self.assertIsNone(stay.end_time)
+        self.assertEqual(await anext(self.events), # type: ignore[misc]
+                         StayEvent(type='journey-travel-on', stay=stay))
         stays = self.journey.get_stays()
         self.assertEqual(len(stays), 2)
         self.assertIn(stay, stays)

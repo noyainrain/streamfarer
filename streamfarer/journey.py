@@ -22,6 +22,16 @@ class EndedJourneyError(Exception):
 class PastJourneyError(Exception):
     """Raised when an action cannot be performed because the journey is not the latest one."""
 
+class StayEvent(Event):
+    """Event about a stay on a journey.
+
+    .. attribute:: stay
+
+       Relevant stay.
+    """
+
+    stay: Stay
+
 class Stay(BaseModel):
     """Stay at a live stream on a journey.
 
@@ -231,7 +241,7 @@ class Journey(BaseModel):
             if not stream.chat:
                 bot.log_message(
                     Message(frm='', to=stream.channel.name, text='Bot is banned from chat'))
-        bot.dispatch_event(Event(type='journey-travel-on'))
+        bot.dispatch_event(StayEvent(type='journey-travel-on', stay=stay))
         return stay
 
     def __str__(self) -> str:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 import asyncio
-from asyncio import CancelledError
+from asyncio import CancelledError, create_task
 from collections.abc import Awaitable, Callable
 from configparser import ConfigParser, ParsingError
 from importlib import resources
@@ -19,10 +19,11 @@ from textwrap import dedent
 
 from . import context
 from .bot import Bot, VERSION
+from .chat import chat
 from .journey import OngoingJourneyError, PastJourneyError
 from .server import serve, server_url
-from .services import AuthenticationError, AuthorizationError
-from .util import text
+from .services import AccessError, AuthenticationError, AuthorizationError
+from .util import cancel, text
 
 class _Arguments:
     command: Callable[[_Arguments], Awaitable[int]]
@@ -49,11 +50,15 @@ async def _run(args: _Arguments) -> int:
     logger.info('Started the server at %s', server.url)
 
     try:
-        await context.bot.get().run()
+        chat_task = create_task(chat())
+        try:
+            await context.bot.get().run()
+            return 0
+        finally:
+            await cancel(chat_task)
     finally:
         server.close()
         logger.info('Stopped the server')
-    return 0
 
 async def _journey(_: _Arguments) -> int:
     for journey in context.bot.get().get_journeys():
@@ -61,14 +66,26 @@ async def _journey(_: _Arguments) -> int:
     return 0
 
 async def _start(args: _Arguments) -> int:
+    bot = context.bot.get()
     try:
-        await context.bot.get().start_journey(args.channel_url, args.title)
+        await bot.start_journey(args.channel_url, args.title)
     except LookupError:
         print('⚠️ There is no channel at CHANNEL_URL or it is offline', file=sys.stderr)
         return 1
     except OngoingJourneyError:
         print('⚠️ There already is an ongoing journey', file=sys.stderr)
         return 1
+
+    # Without IPC events, the chat UI cannot observe when a journey starts
+    logger = getLogger(__name__)
+    try:
+        stream = await bot.stream(args.channel_url)
+        await stream.message('Ahoy!')
+    except AccessError as e:
+        logger.warning('Failed to send the message (%s)', e)
+    except (AuthenticationError, OSError) as e:
+        logger.error('Failed to send the message (%s)', e)
+
     print('✅ Started a new journey', file=sys.stderr)
     return 0
 
