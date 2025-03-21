@@ -4,15 +4,34 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="initial-scale=1" />
 
-        <title>Streamfarer</title>
-        <meta name="description" content="Live stream traveling bot and tiny art experiment." />
+        <title>
+            {% if title %}
+                {{ title }} -
+            {% end %}
+            Streamfarer
+        </title>
+        <meta name="description" content="{{ description }}" />
         <meta name="keywords" content="bot, live stream, journey, art, Twitch" />
+        <meta name="theme-color" content="#1f66ad" />
         <!--
             Sizes as suggested by
             https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Making_PWAs_installable
         -->
         <link rel="icon" sizes="16x16" href="{{ static_url('images/icon-small.png') }}" />
         <link rel="icon" sizes="512x512" href="{{ static_url('images/icon.png') }}" />
+
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content="{{ url }}" />
+        <meta property="og:title" content="{{ title or 'Streamfarer' }}" />
+        <meta property="og:description" content="{{ description }}" />
+        <!-- Size as suggested by https://developers.facebook.com/docs/sharing/webmasters/images -->
+        <meta
+            property="og:image" content="{{ static_url('images/social.png', include_host=True) }}"
+        />
+        <meta
+            property="og:image:alt" content="Streamfarer icon, a stylized sailboat on wavy water."
+        />
+        <meta property="og:site_name" content="Streamfarer" />
 
         <style>
             @import "{{ static_url('main.css') }}";

@@ -39,14 +39,17 @@ class _Index(RequestHandler[_Settings]):
             journey = bot.get_journeys()[0]
             stays = journey.get_stays()
             service = bot.get_service_at(urlorigin(stays[0].channel.url))
+            title = journey.title
         except IndexError:
             journey = None
             stays = None
             service = None
+            title = None
 
         self.set_header('Cache-Control', 'no-cache')
         self.render(
-            'index.html', journey=journey, stays=stays, service=service,
+            'index.html', journey=journey, stays=stays, service=service, url=self.settings['url'],
+            title=title, description='Live stream traveling bot and tiny art experiment.',
             fonts=self.settings['fonts'], version=VERSION, format_datetime=format_datetime,
             format_duration=format_duration)
 

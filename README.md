@@ -2,6 +2,8 @@
 
 Live stream traveling bot and tiny art experiment. ⛵
 
+You can follow its journey at [streamfarer.tv](https://streamfarer.tv/).
+
 ## System Requirements
 
 The following software must be installed on your system:
