@@ -98,12 +98,19 @@ def nested(mapping: Mapping[str, object], name: str, *, separator: str = '_') ->
             result[key] = value
     return result
 
-def text(arg: str) -> str:
-    """Convert a command-line argument *arg* to a text with visible characters."""
-    arg = arg.strip()
-    if not arg:
-        raise ArgumentTypeError()
-    return arg
+def text(*, optional: bool = False) -> Callable[[str], str | None]:
+    """Command-Line argument converter for text with visible characters.
+
+    For *optional* text, ``None`` is returned if the argument is blank.
+    """
+    def convert(arg: str) -> str | None:
+        arg = arg.strip()
+        if not arg:
+            if optional:
+                return None
+            raise ArgumentTypeError()
+        return arg
+    return convert
 
 def add_column(db: sqlite3.Connection, table: str, column: str, value: object = None) -> None:
     """Add a *column* to a *table* in a database *db* if it does not exist yet.

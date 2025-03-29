@@ -68,6 +68,9 @@
                             {{ format_datetime(journey.start_time) }}.
                         {% end %}
                     </p>
+                    {% if journey.description %}
+                        <p class="journey-description">{{ journey.description }}</p>
+                    {% end %}
 
                     {% if not journey.end_time %}
                         {% if service.type == 'twitch' %}

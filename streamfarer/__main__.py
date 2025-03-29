@@ -34,6 +34,7 @@ class _Arguments:
     url: str
     channel_url: str
     title: str
+    description: str | None
     id: str
     client_id: str
     client_secret: str
@@ -68,7 +69,9 @@ async def _journey(_: _Arguments) -> int:
 async def _start(args: _Arguments) -> int:
     bot = context.bot.get()
     try:
-        await bot.start_journey(args.channel_url, args.title)
+        await bot.start_journey(
+            args.channel_url, args.title,
+            description=args.description if hasattr(args, 'description') else None)
     except LookupError:
         print('⚠️ There is no channel at CHANNEL_URL or it is offline', file=sys.stderr)
         return 1
@@ -91,7 +94,11 @@ async def _start(args: _Arguments) -> int:
 
 async def _edit(args: _Arguments) -> int:
     try:
-        context.bot.get().get_journey(args.id).edit(title=args.title)
+        journey = context.bot.get().get_journey(args.id)
+        attrs: dict[str, object] = args.__dict__
+        attrs = {name: value for name, value in attrs.items() if name in {'title', 'description'}}
+        patch = journey.model_copy(update=attrs)
+        journey.edit(patch)
     except KeyError:
         print('⚠️ There is no journey with ID', file=sys.stderr)
         return 1
@@ -177,13 +184,16 @@ async def main(*args: str) -> int:
     start_parser = subparsers.add_parser('start', description=start_help, help=start_help)
     start_parser.add_argument('channel_url', help='URL of a live stream channel',
                               metavar='CHANNEL_URL')
-    start_parser.add_argument('title', type=text, help='journey title', metavar='TITLE')
+    start_parser.add_argument('title', type=text(), help='journey title', metavar='TITLE')
+    start_parser.add_argument('--description', type=text(optional=True), help='journey description')
     start_parser.set_defaults(command=_start)
 
     edit_help = 'Edit a journey.'
-    edit_parser = subparsers.add_parser('edit', description=edit_help, help=edit_help)
+    edit_parser = subparsers.add_parser('edit', description=edit_help,
+                                        argument_default=argparse.SUPPRESS, help=edit_help)
     edit_parser.add_argument('id', help='journey ID', metavar='ID')
-    edit_parser.add_argument('title', help='journey title', metavar='TITLE', type=text)
+    edit_parser.add_argument('--title', type=text(), help='journey title')
+    edit_parser.add_argument('--description', type=text(optional=True), help='journey description')
     edit_parser.set_defaults(command=_edit)
 
     end_help = 'End the ongoing journey.'

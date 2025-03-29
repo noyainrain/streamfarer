@@ -35,11 +35,14 @@ class _Index(RequestHandler[_Settings]):
     def get(self) -> None:
         # pylint: disable=missing-function-docstring
         bot = context.bot.get()
+        description='Live stream traveling bot and tiny art experiment.'
         try:
             journey = bot.get_journeys()[0]
             stays = journey.get_stays()
             service = bot.get_service_at(urlorigin(stays[0].channel.url))
             title = journey.title
+            if journey.description:
+                description = journey.description
         except IndexError:
             journey = None
             stays = None
@@ -49,9 +52,8 @@ class _Index(RequestHandler[_Settings]):
         self.set_header('Cache-Control', 'no-cache')
         self.render(
             'index.html', journey=journey, stays=stays, service=service, url=self.settings['url'],
-            title=title, description='Live stream traveling bot and tiny art experiment.',
-            fonts=self.settings['fonts'], version=VERSION, format_datetime=format_datetime,
-            format_duration=format_duration)
+            title=title, description=description, fonts=self.settings['fonts'], version=VERSION,
+            format_datetime=format_datetime, format_duration=format_duration)
 
 def _log(handler: RequestHandler[_Settings]) -> None:
     request = handler.request

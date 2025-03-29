@@ -25,7 +25,7 @@ from .services import (AuthenticationError, LocalService, LocalServiceAdapter, M
                        Stream, StreamTimeoutError, Twitch, TwitchAdapter)
 from .util import Connection, add_column, randstr, urlorigin
 
-VERSION = '0.2.5'
+VERSION = '0.2.6'
 
 _P = ParamSpec('_P')
 _R_co = TypeVar('_R_co', covariant=True)
@@ -237,10 +237,11 @@ class Bot:
                 raise KeyError(journey_id) from None
 
     @validate_call # type: ignore[misc]
-    async def start_journey(self, channel_url: str, title: Text) -> Journey:
+    async def start_journey(self, channel_url: str, title: Text, *,
+                            description: Text | None = None) -> Journey:
         """Start a new journey at the given *channel_url*.
 
-        *title* is the journey title.
+        *title* is the journey title. *description* is the journey description.
 
         If authentication with the livestreaming service fails, an :exc:`AuthenticationError` is
         raised. If there is a problem communicating with the livestreaming service, an
@@ -253,10 +254,10 @@ class Bot:
                 try:
                     rows = db.execute(
                         """
-                        INSERT INTO journeys (id, title, start_time, end_time, deleted)
-                        VALUES (?, ?, ?, ?, ?) RETURNING *
+                        INSERT INTO journeys (id, title, description, start_time, end_time, deleted)
+                        VALUES (?, ?, ?, ?, ?, ?) RETURNING *
                         """,
-                        (randstr(), title, start_time, None, False))
+                        (randstr(), title, description, start_time, None, False))
                 except IntegrityError as e:
                     if 'journeys_end_time_index' in str(e):
                         raise OngoingJourneyError('Ongoing journey') from None
@@ -348,6 +349,7 @@ class Bot:
                 CREATE TABLE IF NOT EXISTS journeys (
                     id PRIMARY KEY,
                     title,
+                    description,
                     start_time,
                     end_time,
                     deleted,
@@ -436,3 +438,6 @@ class Bot:
                 UPDATE services SET user_id = '', token = '', refresh_token = ''
                 WHERE type = 'twitch' AND user_id IS NULL
                 """)
+
+            # Update Journey.description
+            add_column(db, 'journeys', 'description')

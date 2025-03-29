@@ -83,9 +83,11 @@ class BotTestCase(TestCase):
             await cancel(task)
 
     async def test_start_journey(self) -> None:
-        journey = await self.bot.start_journey(self.channel.url, 'Roaming')
+        journey = await self.bot.start_journey(self.channel.url, 'Roaming',
+                                               description='An adventure.')
 
         self.assertEqual(journey.title, 'Roaming')
+        self.assertEqual(journey.description, 'An adventure.')
         self.assertEqual(journey.start_time, self.now())
         self.assertIsNone(journey.end_time)
         self.assertFalse(journey.deleted)

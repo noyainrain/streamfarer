@@ -11,14 +11,17 @@ class JourneyTest(TestCase):
         self.journey = await self.bot.start_journey(self.channel.url, 'Roaming')
 
     def test_edit(self) -> None:
-        journey = self.journey.edit(title='Drifting')
-        self.assertEqual(journey.title, 'Drifting')
+        attrs = {'title': 'Drifting', 'description': 'An adventure.'}
+        patch = self.journey.model_copy(update=attrs)
+        journey = self.journey.edit(patch)
+        self.assertEqual(journey.title, patch.title)
+        self.assertEqual(journey.description, patch.description)
 
     def test_edit_deleted_journey(self) -> None:
         self.journey.end()
         self.journey.delete()
         with self.assertRaises(KeyError):
-            self.journey.edit(title='Drifting')
+            self.journey.edit(self.journey)
 
     async def test_end(self) -> None:
         journey = self.journey.end()

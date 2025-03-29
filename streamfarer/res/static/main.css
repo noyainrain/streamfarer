@@ -83,6 +83,10 @@ main {
     flex: auto;
 }
 
+.journey-description {
+    white-space: pre-line;
+}
+
 .stays {
     padding: unset;
 }

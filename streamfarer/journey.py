@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from sqlite3 import IntegrityError
 from typing import Self
 
-from pydantic import BaseModel, validate_call
+from pydantic import BaseModel
 
 from . import context
 from .core import Event, Text, format_datetime
@@ -87,6 +87,10 @@ class Journey(BaseModel):
 
        Journey title.
 
+    .. attribute:: description
+
+       Journey description.
+
     .. attribute:: start_time
 
        Time the journey started.
@@ -102,6 +106,7 @@ class Journey(BaseModel):
 
     id: str
     title: Text
+    description: Text | None
     start_time: datetime
     end_time: datetime | None
     deleted: bool
@@ -126,13 +131,18 @@ class Journey(BaseModel):
                 (self.id, ))
             return Stay.model_validate(nested(dict(next(rows)), 'channel'))
 
-    @validate_call # type: ignore[misc]
-    def edit(self, title: Text) -> Self:
-        """Edit the journey *title*."""
+    def edit(self, patch: Journey) -> Self:
+        """Update the journey with a *patch*.
+
+        :attr:`id`, :attr:`start_time`, :attr:`end_time` and :attr:`deleted` are ignored.
+        """
         with context.bot.get().transaction() as db:
             rows = db.execute(
-                'UPDATE journeys SET title = ? WHERE id = ? AND deleted = 0 RETURNING *',
-                (title, self.id))
+                """
+                UPDATE journeys SET title = ?, description = ? WHERE id = ? AND deleted = 0
+                RETURNING *
+                """,
+                (patch.title, patch.description, self.id))
             try:
                 return self.model_validate(dict(next(rows)))
             except StopIteration:

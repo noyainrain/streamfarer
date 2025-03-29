@@ -29,15 +29,22 @@ class MainTest(TestCase):
         self.assertIn(journey.id, stdout)
 
     async def test_start(self) -> None:
-        code, _ = await self.main('start', self.channel.url, 'Roaming')
+        code, _ = await self.main('start', '--description=An adventure.', self.channel.url,
+                                  'Roaming')
         self.assertEqual(code, 0)
-        self.assertTrue(self.bot.get_journeys())
+        journey = next(iter(self.bot.get_journeys()), None)
+        assert journey
+        self.assertEqual(journey.title, 'Roaming')
+        self.assertEqual(journey.description, 'An adventure.')
 
     async def test_edit(self) -> None:
         journey = await self.bot.start_journey(self.channel.url, 'Roaming')
-        code, _ = await self.main('edit', journey.id, 'Drifting')
+        code, _ = await self.main('edit', '--title=Drifting', '--description=An adventure.',
+                                  journey.id)
         self.assertEqual(code, 0)
-        self.assertEqual(self.bot.get_journey(journey.id).title, 'Drifting')
+        journey = self.bot.get_journey(journey.id)
+        self.assertEqual(journey.title, 'Drifting')
+        self.assertEqual(journey.description, 'An adventure.')
 
     async def test_end(self) -> None:
         journey = await self.bot.start_journey(self.channel.url, 'Roaming')
