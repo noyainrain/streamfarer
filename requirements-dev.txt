@@ -1,2 +1,2 @@
 mypy ~= 1.11
-pylint ~= 3.2
+pylint ~= 4.0
