@@ -25,7 +25,7 @@ from .services import (AuthenticationError, LocalService, LocalServiceAdapter, M
                        Stream, StreamTimeoutError, Twitch, TwitchAdapter)
 from .util import Connection, add_column, randstr, urlorigin
 
-VERSION = '0.2.8'
+VERSION = '0.2.9'
 
 _P = ParamSpec('_P')
 _R_co = TypeVar('_R_co', covariant=True)
@@ -60,11 +60,11 @@ class Bot:
        Function that returns the current UTC date and time.
     """
 
+    _AnyService = Annotated[Twitch | LocalService, Field(discriminator='type')]
+
     _JOURNEY_END_GRACE_PERIOD = timedelta(minutes=5)
     _SERVICE_TYPES_BY_URL = {LocalService.url: 'local', Twitch.url: 'twitch'}
-
-    _AnyService = Annotated[Twitch | LocalService, Field(discriminator='type')]
-    _ServiceModel: TypeAdapter[_AnyService] = TypeAdapter(_AnyService)
+    _SERVICE_MODEL: TypeAdapter[_AnyService] = TypeAdapter(_AnyService)
 
     @staticmethod
     def _retrying(
@@ -293,7 +293,7 @@ class Bot:
     def get_services(self) -> list[Service[Stream]]:
         """Get connected livestreaming services."""
         with self.transaction() as db:
-            return [self._ServiceModel.validate_python(dict(row)) # type: ignore[misc]
+            return [self._SERVICE_MODEL.validate_python(dict(row)) # type: ignore[misc]
                     for row in db.execute('SELECT * FROM services ORDER BY type')]
 
     def get_service(self, service_type: str) -> Service[Stream]:
@@ -301,7 +301,7 @@ class Bot:
         with self.transaction() as db:
             rows = db.execute('SELECT * FROM services WHERE type = ?', (service_type, ))
             try:
-                return Bot._ServiceModel.validate_python(dict(next(rows)))
+                return Bot._SERVICE_MODEL.validate_python(dict(next(rows)))
             except StopIteration:
                 raise KeyError(service_type) from None
 

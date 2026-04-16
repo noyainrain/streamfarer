@@ -543,7 +543,8 @@ _AnyTwitchMessage = Annotated[
     Annotated[_TwitchNotificationMessage, Tag('notification')],
     Discriminator(_twitch_message_type)
 ]
-_AnyTwitchMessageModel: TypeAdapter[_AnyTwitchMessage] = TypeAdapter(_AnyTwitchMessage)
+
+_ANY_TWITCH_MESSAGE_MODEL: TypeAdapter[_AnyTwitchMessage] = TypeAdapter(_AnyTwitchMessage)
 
 class _TwitchStreamOfflineNotification(BaseModel):
     pass
@@ -578,7 +579,10 @@ _AnyTwitchNotification = Annotated[
     Annotated[_TwitchChannelChatMessageNotification, Tag('channel.chat.message')],
     Discriminator(_twitch_subscription_type)
 ]
-_TwitchNotificationModel: TypeAdapter[_AnyTwitchNotification] = TypeAdapter(_AnyTwitchNotification)
+
+_TWITCH_NOTIFICATION_MODEL: TypeAdapter[_AnyTwitchNotification] = (
+    TypeAdapter(_AnyTwitchNotification)
+)
 
 async def _post_twitch_token(oauth: WebAPI, endpoint: str, *, client_id: str, client_secret: str,
                              grant_type: str, **args: str) -> _TwitchToken:
@@ -745,7 +749,7 @@ class _EventSub:
         if data is None:
             return None
         try:
-            return _AnyTwitchMessageModel.validate_json(data)
+            return _ANY_TWITCH_MESSAGE_MODEL.validate_json(data)
         except ValidationError as e:
             error = OSError(errno.EPROTO, "Bad message")
             error.add_note(data.decode(errors='replace') if isinstance(data, bytes) else data)
@@ -793,7 +797,7 @@ class TwitchStream(Stream):
                 raise ConnectionResetError(errno.ECONNRESET, 'Partial stream')
 
         try:
-            notification = _TwitchNotificationModel.validate_python(data)
+            notification = _TWITCH_NOTIFICATION_MODEL.validate_python(data)
         except ValidationError as e:
             await self.aclose()
             error = OSError(errno.EPROTO, "Bad notification")

@@ -17,7 +17,7 @@ from .core import format_datetime, format_duration
 from .services import Channel, Twitch
 from .util import Application, RequestHandler, UIModule, urlorigin
 
-_FontsModel = TypeAdapter(dict[str, str])
+_FONTS_MODEL = TypeAdapter(dict[str, str])
 
 class _Settings(TypedDict):
     url: str
@@ -95,7 +95,7 @@ def serve(*, host: str = '', port: int = 8080, url: str | None = None) -> Server
     If there is a problem starting the server, an :exc:`OSError` is raised.
     """
     res = resources.files(f'{__package__}.res')
-    fonts = _FontsModel.validate_json((res / 'static/vendor/unicode.json').read_text())
+    fonts = _FONTS_MODEL.validate_json((res / 'static/vendor/unicode.json').read_text())
 
     res_directory = resources.as_file(res)
     res_path = res_directory.__enter__()
