@@ -243,7 +243,7 @@ class WebAPI:
 class Cursor(sqlite3.Cursor, Generic[T_co]):
     """Database cursor with row type annotations."""
 
-    row_factory: RowFactory[T_co] # type: ignore[assignment]
+    row_factory: RowFactory[T_co]
 
     def __next__(self) -> T_co:
         row: T_co = super().__next__()
