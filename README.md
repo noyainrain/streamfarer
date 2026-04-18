@@ -40,4 +40,4 @@ Come join [#streamfarer⛵ on The Joy of Programming Discord server](https://dis
 
 * Sven Pfaller &lt;sven@inrain.org>
 
-Copyright (c) 2025 Streamfarer contributors
+Copyright (c) 2026 Streamfarer contributors
